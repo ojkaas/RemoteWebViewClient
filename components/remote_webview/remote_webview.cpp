@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.2";
+static const char *const RWV_VERSION = "0.3.3";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 static inline void websocket_force_reconnect(esp_websocket_client_handle_t client) {
@@ -378,7 +378,9 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
   if (!data || !len) return false;
 
 #if REMOTE_WEBVIEW_HW_JPEG
-  if (hw_dec_ && hw_decode_input_buf_ && hw_decode_output_buf_) {
+  // Small JPEG payloads (delta tiles, cursor updates) cause 200ms timeouts on
+  // the HW decoder — go straight to software decode for anything under 1 KB.
+  if (len >= 1024 && hw_dec_ && hw_decode_input_buf_ && hw_decode_output_buf_) {
     jpeg_decode_picture_info_t hdr{};
     if (jpeg_decoder_get_info(data, (uint32_t)len, &hdr) != ESP_OK || !hdr.width || !hdr.height) {
       return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
