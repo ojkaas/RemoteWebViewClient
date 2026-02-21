@@ -399,8 +399,12 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
     memcpy(hw_decode_input_buf_, data, len);
     
     uint32_t written = 0;
-    esp_err_t dr = jpeg_decoder_process(hw_dec_, &jcfg, hw_decode_input_buf_, (uint32_t)len, 
+    esp_err_t dr = jpeg_decoder_process(hw_dec_, &jcfg, hw_decode_input_buf_, (uint32_t)len,
                                         hw_decode_output_buf_, (uint32_t)hw_decode_output_size_, &written);
+    // Allow DMA2D transfer to fully complete before the next decode call.
+    // Back-to-back jpeg_decoder_process() calls can hit a DMA2D FSM assertion
+    // (dma2d.c:309) because the peripheral hasn't returned to idle yet.
+    vTaskDelay(1);
 
     if (dr != ESP_OK) {
       return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
