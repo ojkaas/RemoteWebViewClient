@@ -17,6 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
+static const char *const RWV_VERSION = "0.3.0";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 static inline void websocket_force_reconnect(esp_websocket_client_handle_t client) {
@@ -27,6 +28,7 @@ static inline void websocket_force_reconnect(esp_websocket_client_handle_t clien
 
 void RemoteWebView::setup() {
   self_ = this;
+  ESP_LOGI(TAG, "remote_webview v%s", RWV_VERSION);
 
   if (!display_) {
     ESP_LOGE(TAG, "no display");
@@ -401,10 +403,6 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
     uint32_t written = 0;
     esp_err_t dr = jpeg_decoder_process(hw_dec_, &jcfg, hw_decode_input_buf_, (uint32_t)len,
                                         hw_decode_output_buf_, (uint32_t)hw_decode_output_size_, &written);
-    // Allow DMA2D transfer to fully complete before the next decode call.
-    // Back-to-back jpeg_decoder_process() calls can hit a DMA2D FSM assertion
-    // (dma2d.c:309) because the peripheral hasn't returned to idle yet.
-    vTaskDelay(1);
 
     if (dr != ESP_OK) {
       return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
@@ -418,6 +416,11 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
         esphome::display::COLOR_BITNESS_565,
         rgb565_big_endian_,
         0, 0, x_pad);
+
+    // Allow DMA2D to fully settle before the next tile's jpeg_decoder_process().
+    // Both the JPEG decoder and draw_pixels_at() can use DMA2D; without this
+    // yield the next decode hits an FSM-not-idle assertion (dma2d.c:309).
+    vTaskDelay(1);
 
     return true;
   }
