@@ -386,11 +386,6 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
     const int aligned_h = (hdr.height + 15) & ~15;
     const uint32_t out_sz = (uint32_t)aligned_w * (uint32_t)aligned_h * 2u;
 
-    if (aligned_w != (int)hdr.width) {
-      ESP_LOGW(TAG, "jpeg dimensions not aligned: %u x %u", (unsigned)hdr.width, (unsigned)hdr.height);
-      return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
-    }
-    
     if (len > hw_decode_input_size_ || out_sz > hw_decode_output_size_) {
       ESP_LOGW(TAG, "tile too large for HW decoder buffers");
       return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
@@ -411,10 +406,14 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
       return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
     }
 
+    const int x_pad = aligned_w - (int)hdr.width;
+    ESP_LOGD(TAG, "hw_jpeg tile %ux%u, decode buf %dx%d, x_pad=%d",
+             (unsigned)hdr.width, (unsigned)hdr.height, aligned_w, aligned_h, x_pad);
     display_->draw_pixels_at(dst_x, dst_y, (int)hdr.width, (int)hdr.height, hw_decode_output_buf_,
         esphome::display::COLOR_ORDER_RGB,
         esphome::display::COLOR_BITNESS_565,
-        rgb565_big_endian_);
+        rgb565_big_endian_,
+        0, 0, x_pad);
 
     return true;
   }
