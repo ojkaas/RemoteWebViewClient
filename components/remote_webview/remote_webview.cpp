@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.1";
+static const char *const RWV_VERSION = "0.3.2";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 static inline void websocket_force_reconnect(esp_websocket_client_handle_t client) {
@@ -378,22 +378,7 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
   if (!data || !len) return false;
 
 #if REMOTE_WEBVIEW_HW_JPEG
-  if (hw_decode_input_buf_ && hw_decode_output_buf_) {
-    // Recreate the decoder engine before each tile to work around an ESP-IDF
-    // DMA2D bug where the RX FSM is not idle after 2+ consecutive decodes,
-    // triggering an assertion in _dma2d_default_rx_isr (dma2d.c:309).
-    // See https://github.com/espressif/esp-idf/issues/17040
-    if (hw_dec_) {
-      jpeg_del_decoder_engine(hw_dec_);
-      hw_dec_ = nullptr;
-    }
-    jpeg_decode_engine_cfg_t eng_cfg = { .timeout_ms = 200 };
-    if (jpeg_new_decoder_engine(&eng_cfg, &hw_dec_) != ESP_OK) {
-      ESP_LOGW(TAG, "hw_jpeg engine create failed, falling back to sw");
-      hw_dec_ = nullptr;
-      return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
-    }
-
+  if (hw_dec_ && hw_decode_input_buf_ && hw_decode_output_buf_) {
     jpeg_decode_picture_info_t hdr{};
     if (jpeg_decoder_get_info(data, (uint32_t)len, &hdr) != ESP_OK || !hdr.width || !hdr.height) {
       return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
@@ -414,8 +399,6 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
     jcfg.conv_std      = JPEG_YUV_RGB_CONV_STD_BT709;
 
     memcpy(hw_decode_input_buf_, data, len);
-    esp_cache_msync(hw_decode_input_buf_, len,
-                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 
     uint32_t written = 0;
     esp_err_t dr = jpeg_decoder_process(hw_dec_, &jcfg, hw_decode_input_buf_, (uint32_t)len,
@@ -425,17 +408,28 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
       return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
     }
 
-    esp_cache_msync(hw_decode_output_buf_, out_sz,
-                    ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-
     const int x_pad = aligned_w - (int)hdr.width;
-    ESP_LOGD(TAG, "hw_jpeg tile %ux%u, decode buf %dx%d, x_pad=%d",
+
+    // Strip DMA2D padding in-place with CPU to avoid the stride-based
+    // draw_pixels_at overload which uses PPA/DMA2D on ESP32-P4, conflicting
+    // with the JPEG decoder's DMA2D and triggering an assertion in
+    // _dma2d_default_rx_isr (dma2d.c:309).
+    if (x_pad > 0) {
+      const int src_stride = aligned_w * 2;
+      const int dst_stride = (int)hdr.width * 2;
+      for (int row = 1; row < (int)hdr.height; row++) {
+        memmove(hw_decode_output_buf_ + row * dst_stride,
+                hw_decode_output_buf_ + row * src_stride,
+                dst_stride);
+      }
+    }
+
+    ESP_LOGD(TAG, "hw_jpeg tile %ux%u, aligned %dx%d, x_pad=%d",
              (unsigned)hdr.width, (unsigned)hdr.height, aligned_w, aligned_h, x_pad);
     display_->draw_pixels_at(dst_x, dst_y, (int)hdr.width, (int)hdr.height, hw_decode_output_buf_,
         esphome::display::COLOR_ORDER_RGB,
         esphome::display::COLOR_BITNESS_565,
-        rgb565_big_endian_,
-        0, 0, x_pad);
+        rgb565_big_endian_);
 
     return true;
   }
