@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.3";
+static const char *const RWV_VERSION = "0.3.4";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 static inline void websocket_force_reconnect(esp_websocket_client_handle_t client) {
@@ -670,10 +670,39 @@ std::string RemoteWebView::build_ws_uri_() const {
   const std::string id = resolve_device_id_();
   append_q_str_(uri, "id", id.c_str());
 
+  // The server handles rotation by swapping the viewport dimensions,
+  // rendering content in the swapped viewport, then rotating the output
+  // image back. Tiles always arrive in the ORIGINAL (input) w×h space.
+  //
+  // display_->get_width() / get_height() already account for the display
+  // driver's own rotation. If the display driver has rotation set, those
+  // dimensions are already in the desired orientation and we must NOT ask
+  // the server to rotate again (that would swap the viewport to the wrong
+  // orientation).
+  //
+  // When only the remote_webview rotation is set (display driver has no
+  // rotation), the server rotation works correctly: it swaps the viewport
+  // to the desired orientation, renders there, and rotates the output back
+  // to match the physical display coordinates.
+  //
+  // We detect the display driver's rotation and subtract it to avoid
+  // double-rotation.  When both are set to the same value the net effect
+  // is zero — exactly what we want.
+  const int disp_rot = static_cast<int>(display_->get_rotation());
+  const int net_rotation = ((rotation_ - disp_rot) % 360 + 360) % 360;
+
+  ESP_LOGD(TAG, "display %dx%d (driver rotation=%d°), rwv rotation=%d° → server r=%d°",
+           display_width_, display_height_, disp_rot, rotation_, net_rotation);
+
+  if (net_rotation == 90 || net_rotation == 270) {
+    ESP_LOGI(TAG, "server will swap viewport to %dx%d; if this is wrong, "
+             "remove 'rotation: %d' from remote_webview config",
+             display_height_, display_width_, rotation_);
+  }
+
   append_q_int_(uri, "w", display_width_);
   append_q_int_(uri, "h", display_height_);
-
-  append_q_int_(uri,   "r",    rotation_);
+  append_q_int_(uri,   "r",    net_rotation);
   append_q_int_(uri,   "ts",   tile_size_);
   append_q_int_(uri,   "fftc", full_frame_tile_count_);
   append_q_float_(uri, "ffat", full_frame_area_threshold_);
