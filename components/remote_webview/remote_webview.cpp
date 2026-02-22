@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.6";
+static const char *const RWV_VERSION = "0.3.7";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 static inline void websocket_force_reconnect(esp_websocket_client_handle_t client) {
@@ -53,7 +53,7 @@ void RemoteWebView::setup() {
 
 #if REMOTE_WEBVIEW_HW_JPEG
   jpeg_decode_engine_cfg_t jcfg = {
-    .timeout_ms = 200,
+    .timeout_ms = 50,
   };
   if (jpeg_new_decoder_engine(&jcfg, &hw_dec_) != ESP_OK) {
     hw_dec_ = nullptr;
@@ -284,11 +284,61 @@ void RemoteWebView::start_decode_task_() {
 
 void RemoteWebView::decode_task_tramp_(void *arg) {
   auto *self = reinterpret_cast<RemoteWebView*>(arg);
-  WsMsg m;
+  WsMsg pending[cfg::decode_queue_depth];
+
   for (;;) {
-    if (xQueueReceive(self->q_decode_, &m, portMAX_DELAY) == pdTRUE) {
-      self->process_packet_(m.client, m.buf, m.len);
-      free(m.buf);
+    // Block until at least one message arrives
+    if (xQueueReceive(self->q_decode_, &pending[0], portMAX_DELAY) != pdTRUE)
+      continue;
+    int count = 1;
+
+    // Drain any additional queued messages (non-blocking)
+    while (count < cfg::decode_queue_depth &&
+           xQueueReceive(self->q_decode_, &pending[count], 0) == pdTRUE) {
+      count++;
+    }
+
+    // Fast path: single message, no need to check for stale frames
+    if (count == 1) {
+      self->process_packet_(pending[0].client, pending[0].buf, pending[0].len);
+      free(pending[0].buf);
+      continue;
+    }
+
+    // Multiple messages queued — find the newest frame_id
+    uint32_t newest_fid = 0;
+    bool have_frame = false;
+    for (int i = 0; i < count; i++) {
+      if (pending[i].len >= sizeof(proto::FrameHeader) &&
+          pending[i].buf[0] == static_cast<uint8_t>(proto::MsgType::Frame)) {
+        uint32_t fid = proto::rd32(pending[i].buf + 2);
+        if (!have_frame || static_cast<int32_t>(fid - newest_fid) > 0) {
+          newest_fid = fid;
+          have_frame = true;
+        }
+      }
+    }
+
+    // Process newest frame + non-frame messages, drop stale frames
+    int dropped = 0;
+    for (int i = 0; i < count; i++) {
+      bool is_stale = false;
+      if (have_frame && pending[i].len >= sizeof(proto::FrameHeader) &&
+          pending[i].buf[0] == static_cast<uint8_t>(proto::MsgType::Frame)) {
+        uint32_t fid = proto::rd32(pending[i].buf + 2);
+        is_stale = static_cast<int32_t>(fid - newest_fid) < 0;
+      }
+
+      if (is_stale) {
+        dropped++;
+      } else {
+        self->process_packet_(pending[i].client, pending[i].buf, pending[i].len);
+      }
+      free(pending[i].buf);
+    }
+
+    if (dropped > 0) {
+      ESP_LOGD(TAG, "dropped %d stale packets (keeping frame %lu)", dropped, (unsigned long)newest_fid);
     }
   }
 }
