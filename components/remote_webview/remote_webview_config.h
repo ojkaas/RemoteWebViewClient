@@ -13,6 +13,9 @@ inline constexpr size_t ws_max_message_bytes = 64 * 1024;
 inline constexpr size_t ws_buffer_size = 30 * 1024;
 inline constexpr size_t ws_keepalive_interval_us = 60 * 1000 * 1000;
 
+inline constexpr int send_queue_depth = 32;
+inline constexpr int send_task_stack  = 4096;
+
 inline constexpr bool coalesce_moves = true;
 inline constexpr uint32_t move_rate_hz = 60;
 

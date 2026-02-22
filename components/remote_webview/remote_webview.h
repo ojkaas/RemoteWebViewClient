@@ -63,6 +63,11 @@ class RemoteWebView : public Component {
     uint8_t *buf{nullptr};
     size_t total{0}, filled{0};
   };
+  struct SendMsg {
+    uint8_t  buf[16];       // inline: touch(8), stats(10), keepalive(2)
+    uint8_t *heap{nullptr}; // heap-alloc for open_url; freed after send
+    size_t   len{0};
+  };
 
   static constexpr bool     kCoalesceMoves  = cfg::coalesce_moves;
   static constexpr uint32_t kMoveRateHz     = cfg::move_rate_hz;
@@ -110,16 +115,20 @@ class RemoteWebView : public Component {
   size_t   frame_stats_bytes_{0};
 
   QueueHandle_t     q_decode_{nullptr};
-  SemaphoreHandle_t ws_send_mtx_{nullptr};
+  QueueHandle_t     q_send_{nullptr};
   TaskHandle_t      t_ws_{nullptr};
   TaskHandle_t      t_decode_{nullptr};
+  TaskHandle_t      t_send_{nullptr};
 
-  esp_websocket_client_handle_t ws_client_{nullptr};
+  esp_websocket_client_handle_t ws_client_{nullptr};  // set by event handler, read by send task
 
   void start_ws_task_();
   void start_decode_task_();
+  void start_send_task_();
   static void ws_task_tramp_(void *arg);
   static void decode_task_tramp_(void *arg);
+  static void send_task_tramp_(void *arg);
+  bool ws_enqueue_send_(const uint8_t *data, size_t len, uint8_t *heap_buf, TickType_t wait);
 
   static void ws_event_handler_(void *handler_arg, esp_event_base_t base, int32_t event_id, void *event_data);
   static void reasm_reset_(WsReasm &r);

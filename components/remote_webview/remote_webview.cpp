@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.4";
+static const char *const RWV_VERSION = "0.3.5";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 static inline void websocket_force_reconnect(esp_websocket_client_handle_t client) {
@@ -39,9 +39,10 @@ void RemoteWebView::setup() {
   display_height_ = display_->get_height();
 
   q_decode_ = xQueueCreate(cfg::decode_queue_depth, sizeof(WsMsg));
-  ws_send_mtx_ = xSemaphoreCreateMutex();
+  q_send_   = xQueueCreate(cfg::send_queue_depth, sizeof(SendMsg));
 
   start_decode_task_();
+  start_send_task_();
   start_ws_task_();
 
   if (touch_) {
@@ -292,6 +293,42 @@ void RemoteWebView::decode_task_tramp_(void *arg) {
   }
 }
 
+void RemoteWebView::start_send_task_() {
+  xTaskCreatePinnedToCore(&RemoteWebView::send_task_tramp_, "rwv_send", cfg::send_task_stack, this, 5, &t_send_, 0);
+}
+
+void RemoteWebView::send_task_tramp_(void *arg) {
+  auto *self = reinterpret_cast<RemoteWebView*>(arg);
+  SendMsg m;
+  for (;;) {
+    if (xQueueReceive(self->q_send_, &m, portMAX_DELAY) != pdTRUE)
+      continue;
+    const uint8_t *data = m.heap ? m.heap : m.buf;
+    if (self->ws_client_ && esp_websocket_client_is_connected(self->ws_client_)) {
+      esp_websocket_client_send_bin(self->ws_client_, (const char *)data, (int)m.len, pdMS_TO_TICKS(200));
+    }
+    if (m.heap) free(m.heap);
+  }
+}
+
+bool RemoteWebView::ws_enqueue_send_(const uint8_t *data, size_t len, uint8_t *heap_buf, TickType_t wait) {
+  if (!q_send_ || !data || len == 0) return false;
+  SendMsg m{};
+  if (heap_buf) {
+    m.heap = heap_buf;
+  } else {
+    if (len > sizeof(m.buf)) return false;
+    memcpy(m.buf, data, len);
+    m.heap = nullptr;
+  }
+  m.len = len;
+  if (xQueueSend(q_send_, &m, wait) != pdTRUE) {
+    if (m.heap) free(m.heap);
+    return false;
+  }
+  return true;
+}
+
 void RemoteWebView::process_packet_(void * /*client*/, const uint8_t *data, size_t len) {
   if (!data || len == 0) return;
 
@@ -366,12 +403,7 @@ void RemoteWebView::process_frame_stats_packet_(const uint8_t *data, size_t len)
   frame_stats_count_ = 0;
   frame_stats_bytes_ = 0;
 
-  const TickType_t to = pdMS_TO_TICKS(50);
-  if (xSemaphoreTake(ws_send_mtx_, to) != pdTRUE)
-    return;
-
-  esp_websocket_client_send_bin(ws_client_, (const char*)pkt, (int)n, to);
-  xSemaphoreGive(ws_send_mtx_);
+  ws_enqueue_send_(pkt, n, nullptr, pdMS_TO_TICKS(10));
 }
 
 bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const uint8_t *data, size_t len) {
@@ -486,7 +518,7 @@ bool RemoteWebView::ws_send_touch_event_(proto::TouchType type, int x, int y, ui
   if (touch_disabled_)
     return false;
 
-  if (!ws_client_ || !ws_send_mtx_ || !esp_websocket_client_is_connected(ws_client_))
+  if (!ws_client_ || !esp_websocket_client_is_connected(ws_client_))
     return false;
 
   if (x < 0) x = 0; if (y < 0) y = 0;
@@ -495,56 +527,40 @@ bool RemoteWebView::ws_send_touch_event_(proto::TouchType type, int x, int y, ui
   uint8_t pkt[sizeof(proto::TouchPacket)];
   const size_t n = proto::build_touch_packet(type, pid, x, y, pkt);
 
-  const TickType_t to = pdMS_TO_TICKS(50);
-  if (xSemaphoreTake(ws_send_mtx_, pdMS_TO_TICKS(10)) != pdTRUE)
-    return false;
-
-  int r = esp_websocket_client_send_bin(ws_client_, (const char*)pkt, (int)n, to);
-  xSemaphoreGive(ws_send_mtx_);
-  return r == (int)n;
+  // Move events are expendable; Down/Up are critical for click detection
+  const TickType_t wait = (type == proto::TouchType::Move) ? 0 : pdMS_TO_TICKS(50);
+  return ws_enqueue_send_(pkt, n, nullptr, wait);
 }
 
 bool RemoteWebView::ws_send_open_url_(const char *url, uint16_t flags) {
-  if (!ws_client_ || !ws_send_mtx_ ||  !url || !esp_websocket_client_is_connected(ws_client_))
+  if (!ws_client_ || !url || !esp_websocket_client_is_connected(ws_client_))
     return false;
 
   const uint32_t n = (uint32_t) strlen(url);
   const size_t total = sizeof(proto::OpenURLHeader) + (size_t) n;
-  
+
   if (total > 16 * 1024) return false;
 
-    auto *pkt = (uint8_t *) heap_caps_malloc(total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  auto *pkt = (uint8_t *) heap_caps_malloc(total, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!pkt) pkt = (uint8_t *) heap_caps_malloc(total, MALLOC_CAP_8BIT);
   if (!pkt) return false;
 
   const size_t written = proto::build_open_url_packet(url, flags, pkt, total);
-  bool ok = false;
-  if (written) {
-    if (xSemaphoreTake(ws_send_mtx_, pdMS_TO_TICKS(50)) == pdTRUE) {
-      const int r = esp_websocket_client_send_bin(ws_client_, (const char *) pkt, (int) written, pdMS_TO_TICKS(200));
-      xSemaphoreGive(ws_send_mtx_);
-      ok = (r == (int) written);
-    }
-  }
-  free(pkt);
-  return ok;
+  if (!written) { free(pkt); return false; }
+
+  // ws_enqueue_send_ takes ownership of pkt (freed after send or on queue-full)
+  return ws_enqueue_send_(pkt, written, pkt, pdMS_TO_TICKS(100));
 }
 
 bool RemoteWebView::ws_send_keepalive_() {
-  if (!ws_client_ || !ws_send_mtx_ || !esp_websocket_client_is_connected(ws_client_))
+  if (!ws_client_ || !esp_websocket_client_is_connected(ws_client_))
     return false;
 
   uint8_t pkt[sizeof(proto::KeepalivePacket)];
   const size_t n = proto::build_keepalive_packet(pkt);
   if (!n) return false;
 
-  const TickType_t to = pdMS_TO_TICKS(50);
-  if (xSemaphoreTake(ws_send_mtx_, to) != pdTRUE)
-    return false;
-
-  const int r = esp_websocket_client_send_bin(ws_client_, (const char*)pkt, (int)n, to);
-  xSemaphoreGive(ws_send_mtx_);
-  return r == (int)n;
+  return ws_enqueue_send_(pkt, n, nullptr, pdMS_TO_TICKS(50));
 }
 
 void RemoteWebViewTouchListener::update(const touchscreen::TouchPoints_t &pts) {
