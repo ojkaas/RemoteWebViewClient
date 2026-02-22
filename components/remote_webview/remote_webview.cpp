@@ -153,7 +153,7 @@ void RemoteWebView::ws_task_tramp_(void *arg) {
   esp_websocket_client_config_t cfg_ws = {};
   cfg_ws.uri = uri_str.c_str();
   cfg_ws.reconnect_timeout_ms = 2000;
-  cfg_ws.network_timeout_ms   = 10000;
+  cfg_ws.network_timeout_ms   = 100;
   cfg_ws.task_stack           = cfg::ws_task_stack;
   cfg_ws.task_prio            = cfg::ws_task_prio;
   cfg_ws.buffer_size          = cfg::ws_buffer_size;
@@ -294,7 +294,9 @@ void RemoteWebView::decode_task_tramp_(void *arg) {
 }
 
 void RemoteWebView::start_send_task_() {
-  xTaskCreatePinnedToCore(&RemoteWebView::send_task_tramp_, "rwv_send", cfg::send_task_stack, this, 5, &t_send_, 0);
+  // Priority 7 > WS client task (5) so FreeRTOS priority inheritance
+  // gives us the lock as soon as the WS client releases it.
+  xTaskCreatePinnedToCore(&RemoteWebView::send_task_tramp_, "rwv_send", cfg::send_task_stack, this, 7, &t_send_, 0);
 }
 
 void RemoteWebView::send_task_tramp_(void *arg) {
@@ -305,7 +307,9 @@ void RemoteWebView::send_task_tramp_(void *arg) {
       continue;
     const uint8_t *data = m.heap ? m.heap : m.buf;
     if (self->ws_client_ && esp_websocket_client_is_connected(self->ws_client_)) {
-      esp_websocket_client_send_bin(self->ws_client_, (const char *)data, (int)m.len, pdMS_TO_TICKS(200));
+      // Short timeout — the WS client releases its lock every ~100ms
+      // (network_timeout_ms). Retry on next queue iteration if needed.
+      esp_websocket_client_send_bin(self->ws_client_, (const char *)data, (int)m.len, pdMS_TO_TICKS(150));
     }
     if (m.heap) free(m.heap);
   }
