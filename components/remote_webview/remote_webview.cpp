@@ -153,7 +153,7 @@ void RemoteWebView::ws_task_tramp_(void *arg) {
   esp_websocket_client_config_t cfg_ws = {};
   cfg_ws.uri = uri_str.c_str();
   cfg_ws.reconnect_timeout_ms = 2000;
-  cfg_ws.network_timeout_ms   = 100;
+  cfg_ws.network_timeout_ms   = 10000;
   cfg_ws.task_stack           = cfg::ws_task_stack;
   cfg_ws.task_prio            = cfg::ws_task_prio;
   cfg_ws.buffer_size          = cfg::ws_buffer_size;
