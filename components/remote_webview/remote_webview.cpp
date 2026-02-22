@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.5";
+static const char *const RWV_VERSION = "0.3.6";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 static inline void websocket_force_reconnect(esp_websocket_client_handle_t client) {
