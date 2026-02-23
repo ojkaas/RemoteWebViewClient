@@ -439,7 +439,7 @@ void RemoteWebView::process_frame_packet_(const uint8_t *data, size_t len)
     frame_stats_bytes_ += frame_bytes_;
     frame_stats_time_ += time_ms;
     frame_stats_count_++;
-    ESP_LOGD(TAG, "frame %lu: tiles %u (%u bytes) - %lu ms", frame_id_, frame_tiles_, frame_bytes_, time_ms);
+    //ESP_LOGD(TAG, "frame %lu: tiles %u (%u bytes) - %lu ms", frame_id_, frame_tiles_, frame_bytes_, time_ms);
   }
 }
 
@@ -512,8 +512,7 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
       }
     }
 
-    ESP_LOGD(TAG, "hw_jpeg tile %ux%u, aligned %dx%d, x_pad=%d",
-             (unsigned)hdr.width, (unsigned)hdr.height, aligned_w, aligned_h, x_pad);
+    //ESP_LOGD(TAG, "hw_jpeg tile %ux%u, aligned %dx%d, x_pad=%d",(unsigned)hdr.width, (unsigned)hdr.height, aligned_w, aligned_h, x_pad);
     display_->draw_pixels_at(dst_x, dst_y, (int)hdr.width, (int)hdr.height, hw_decode_output_buf_,
         esphome::display::COLOR_ORDER_RGB,
         esphome::display::COLOR_BITNESS_565,
