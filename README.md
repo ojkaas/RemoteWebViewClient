@@ -6,7 +6,31 @@
 
 [Demo video](https://youtu.be/rD2aYUUrv5o)
 
+> Fork of [strange-v/RemoteWebViewClient](https://github.com/strange-v/RemoteWebViewClient) with ESP32-P4 hardware JPEG decode fixes.
+
 This is a client that connects to [Remote WebView Server](https://github.com/strange-v/RemoteWebViewServer) — a headless browser that renders target web pages (e.g., Home Assistant dashboards) and streams them as image tiles over WebSocket to lightweight clients (ESP32 displays).
+
+## What Changed vs Upstream
+
+> [!WARNING]
+> These changes were heavily vibe-coded with AI assistance. They work on my local setup and my specific hardware (ESP32-P4 + JC1060P470C), but have not been extensively tested beyond that. Use at your own risk.
+
+### ESP32-P4 Hardware JPEG Fixes
+- **Non-16-aligned tile decode** — use stride-aware `draw_pixels_at` with padding instead of falling back to software decode
+- **DMA2D race condition** — recreate JPEG decoder engine per tile to work around ESP-IDF DMA2D FSM bug ([espressif/esp-idf#17040](https://github.com/espressif/esp-idf/issues/17040))
+- **CPU-based padding strip** — avoid DMA2D conflict between JPEG decoder and `draw_pixels_at` by stripping alignment padding with `memmove`
+- **Small payload bypass** — route tiles <1 KB directly to software decode to avoid 200 ms HW timeout
+- **Stale frame dropping** — drain decode queue and skip outdated frames during screen transitions; reduced HW JPEG timeout from 200 ms to 50 ms
+
+### WebSocket Reliability
+- **Dedicated send queue** — replaced `ws_send_mtx_` with a FreeRTOS queue + `rwv_send` task so touch Down/Up events aren't dropped during frame reception
+- **Send task priority boost** — raised to priority 7 (above WS client's 5) so FreeRTOS priority inheritance releases the lock promptly
+- **Network timeout revert** — restored `network_timeout_ms` to 10 000 (100 ms was too aggressive, causing constant reconnects)
+- **Message size cap fix** — increased reassembly buffer from 64 KB to 600 KB to accept server's 512 KB full-frame messages
+
+### Other
+- **Double-rotation fix** — detect display driver's own rotation and subtract it before sending to server
+- **Version logging** — log component version at setup for quick firmware identification
 
 ## ESPHome component
 
