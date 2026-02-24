@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd /c/Coding/Screen && git clone https://github.com/strange-v/RemoteWebViewClient.git . 2>&1)",
+      "Bash(cd /c/Coding/Screen && git init && git remote add origin https://github.com/strange-v/RemoteWebViewClient.git && git fetch origin 2>&1)",
+      "Bash(cd /c/Coding/Screen && git checkout -b hardware_jpeg origin/hardware_jpeg 2>&1)",
+      "Bash(echo Remote removed, repo is now local-only:*)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(cd /c/Coding/Screen && git remote add upstream https://github.com/strange-v/RemoteWebViewClient.git && git fetch upstream 2>&1)",
+      "Bash(cd /c/Coding/Screen && git rebase upstream/main 2>&1)",
+      "Bash(git:*)",
+      "WebFetch(domain:docs.espressif.com)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:esphome.io)"
+    ]
+  }
+}
