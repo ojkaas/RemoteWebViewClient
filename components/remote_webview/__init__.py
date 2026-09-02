@@ -33,6 +33,7 @@ CONF_CHROMA = "chroma_subsampling"
 CONF_SCREENCAST_FORMAT = "screencast_format"
 CONF_SCREENCAST_QUALITY = "screencast_quality"
 CONF_REDUCED_MOTION = "reduced_motion"
+CONF_SCREENCAST_MODE = "screencast_mode"
 
 _SERVER_RE = re.compile(
     r"^(?P<host>[A-Za-z0-9](?:[A-Za-z0-9\-\.]*[A-Za-z0-9])?)\:(?P<port>\d{1,5})$"
@@ -84,6 +85,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_SCREENCAST_FORMAT): cv.one_of("png", "jpeg", lower=True),
         cv.Optional(CONF_SCREENCAST_QUALITY): cv.int_range(min=1, max=100),
         cv.Optional(CONF_REDUCED_MOTION): cv.boolean,
+        cv.Optional(CONF_SCREENCAST_MODE): cv.one_of("stream", "ondemand", lower=True),
         cv.Optional(CONF_ON_CONNECT): automation.validate_automation(
             {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(OnConnectTrigger)}
         ),
@@ -166,6 +168,8 @@ async def to_code(config):
         cg.add(var.set_screencast_quality(config[CONF_SCREENCAST_QUALITY]))
     if CONF_REDUCED_MOTION in config:
         cg.add(var.set_reduced_motion(config[CONF_REDUCED_MOTION]))
+    if CONF_SCREENCAST_MODE in config:
+        cg.add(var.set_screencast_mode(config[CONF_SCREENCAST_MODE]))
 
     for conf in config.get(CONF_ON_CONNECT, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)

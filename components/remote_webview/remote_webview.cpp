@@ -170,6 +170,7 @@ void RemoteWebView::dump_config() {
   if (!screencast_format_.empty()) ESP_LOGCONFIG(TAG, "  screencast_format: %s", screencast_format_.c_str());
   print_opt_int   ("screencast_quality",        screencast_quality_);
   print_opt_int   ("reduced_motion",            reduced_motion_);
+  if (!screencast_mode_.empty()) ESP_LOGCONFIG(TAG, "  screencast_mode: %s", screencast_mode_.c_str());
 }
 
 bool RemoteWebView::open_url(const std::string &s, bool force) {
@@ -916,6 +917,7 @@ std::string RemoteWebView::build_ws_uri_() const {
   append_q_str_(uri,   "scf",  screencast_format_.c_str());
   append_q_int_(uri,   "scq",  screencast_quality_);
   append_q_int_(uri,   "prm",  reduced_motion_);   // emulate prefers-reduced-motion for this device
+  append_q_str_(uri,   "scm",  screencast_mode_.c_str());
 
   return uri;
 }
