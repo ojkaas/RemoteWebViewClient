@@ -245,6 +245,15 @@ button:
 
 ## Recommendations
 
+Measured on an ESP32-P4 (JC1060P470C, 1024x600, Ethernet) against server 1.1.19, 2026-09-02/03:
+
+- **`tile_size: 64`** — only changed regions are sent. Went from 14 fps (one 1024x600 tile) to 23-27 fps; 32 px tiles are slower again (too many small encodes), 128 px is in between.
+- **`jpeg_quality: 100`** with the server's default 4:4:4 chroma is effectively lossless on an RGB565 panel (max error 1 step). Quality 90 or 4:2:0 chroma produce visibly flashing blocks in dark gradients; the ~2x bandwidth saving is not worth it.
+- **`every_nth_frame: 2`** — Chromium captures at most 30 frames/s, which halves its capture work without a visible difference.
+- **Animations on the page**: give CSS animations a `steps()` timing function (e.g. `steps(36, end)` on a 3 s loop) so Chromium only produces a new frame when a value actually changes. On the barcode idle screen this cut the server container from ~140% to ~63% of a core with an unchanged design.
+- Server-side flow control (`ack=1`, automatic since 0.3.9 with server 1.1.5+) keeps latency at roughly one frame on any link; `min_frame_interval` rarely needs tuning any more.
+
+
 - **full_frame_tile_count** set to 1 is the most efficient way to do a full-screen update; use it if your network/device memory allows it.
 - **every_nth_frame** must be 1 if you don’t want to miss changes (though increasing it may reduce server load). I recommend keeping it set to 1.
 - **min_frame_interval** should be slightly larger than the render time reported by the self-test (set `self-test` as a url parameter in the YAML).
