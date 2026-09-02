@@ -8,6 +8,8 @@ namespace esphome::remote_webview::proto {
 constexpr uint8_t kProtocolVersion = 1;
 constexpr uint8_t kFlafLastOfFrame = 1u<<0;
 constexpr uint8_t kFlagIsFullFrame = 1u<<1;
+// OpenURL flags
+constexpr uint16_t kFlagOpenURLForce = 1u<<0;  // reload even if the URL is unchanged
 
 enum class MsgType   : uint8_t { Unknown = 0, Frame = 1, Touch = 2, FrameStats = 3, OpenURL = 4, Keepalive = 5 };
 enum class Encoding  : uint8_t { Unknown = 0, PNG = 1, JPEG = 2, RAW565 = 3, RAW565_RLE = 4, RAW565_LZ4 = 5 };

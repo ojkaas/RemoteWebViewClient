@@ -1,5 +1,7 @@
 #pragma once
 #include "esphome/core/component.h"
+#include "esphome/core/automation.h"
+#include <atomic>
 #include "esphome/components/display/display.h"
 #include "esphome/components/touchscreen/touchscreen.h"
 #include "JPEGDEC.h"
@@ -46,10 +48,16 @@ class RemoteWebView : public Component {
   void set_big_endian(bool v) { rgb565_big_endian_ = v; }
   void set_rotation(int v) { rotation_ = v; }
   void disable_touch(bool disable);
-  bool open_url(const std::string &s);
+  bool open_url(const std::string &s, bool force = false);
+  // Ask the server to reload the current page and push a full frame.
+  bool refresh();
+  bool is_connected() const;
+
+  void add_on_connect_callback(std::function<void()> &&callback);
+  void add_on_disconnect_callback(std::function<void()> &&callback);
 
   void setup() override;
-  void loop() override {}
+  void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::LATE; }
 
@@ -105,6 +113,14 @@ class RemoteWebView : public Component {
 
   uint64_t last_move_us_{0};
   uint64_t last_keepalive_us_{0};
+  uint64_t disconnected_since_us_{0};  // supervisor task only
+
+  // Set from the WS event handler (websocket task), consumed in loop().
+  std::atomic<bool> connect_pending_{false};
+  std::atomic<bool> disconnect_pending_{false};
+  std::atomic<bool> was_connected_{false};  // so failed reconnect attempts don't re-fire on_disconnect
+  CallbackManager<void()> on_connect_callback_{};
+  CallbackManager<void()> on_disconnect_callback_{};
   
   uint64_t frame_start_us_ = 0;
   uint32_t frame_id_{0xffffffffu};

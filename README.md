@@ -28,6 +28,14 @@ This is a client that connects to [Remote WebView Server](https://github.com/str
 - **Network timeout revert** — restored `network_timeout_ms` to 10 000 (100 ms was too aggressive, causing constant reconnects)
 - **Message size cap fix** — increased reassembly buffer from 64 KB to 600 KB to accept server's 512 KB full-frame messages
 
+### Connection reliability (0.3.8)
+- **Reconnect after server close** — `enable_close_reconnect` is now set. Without it the ESP-IDF WebSocket task simply exited whenever the *server* closed the socket (server restart, add-on update, duplicate-id kick) and the display never came back.
+- **No restart from inside the WebSocket task** — the disconnect/close handlers used to call `stop()`/`start()` from the client's own task, which ESP-IDF refuses (and then races a second task). The client's auto-reconnect handles drops; a supervisor task restarts the client only if it stays down for 30 s.
+- **Clean server close was never handled** — the `WEBSOCKET_EVENT_CLOSED` case was wrapped in `#ifdef WEBSOCKET_EVENT_CLOSED`, but that identifier is an enum, so the case never compiled. It is now handled like a disconnect.
+- **Fast dead-connection detection** — WS ping every 5 s with a 15 s pong timeout (default was 120 s) plus TCP keepalive, so half-open sockets after a WiFi roam or AP reboot are noticed in seconds instead of minutes.
+- **`on_connect` / `on_disconnect` triggers** — run automations (dim the panel, log, notify) on connection state changes.
+- **`remote_webview.refresh` action** — forces the server to reload the current page and push a full frame (requires server 1.1.4+).
+
 ### Other
 - **Double-rotation fix** — detect display driver's own rotation and subtract it before sending to server
 - **Version logging** — log component version at setup for quick firmware identification
@@ -212,6 +220,22 @@ text:
 | `max_bytes_per_msg`     | int (B)   | ❌       | `14336` or `61440`                | Upper bound for a single WS binary message. |
 | `big_endian`            | bool      | ❌       | `true` or `false`                 | Use big-endian RGB565 pixel order for JPEG output (set false for little-endian panels). Default is `true`. |
 | `rotation`              | int       | ❌       | 0, 90, 180, 270                   | Enables software rotation for both the display and touchscreen. |
+| `on_connect`            | automation| ❌       | `- logger.log: "connected"`       | Runs each time the WebSocket connection to the server is established. |
+| `on_disconnect`         | automation| ❌       | `- logger.log: "disconnected"`    | Runs each time the connection is lost or closed by the server. |
+
+### Actions
+
+| Action                     | Description |
+|----------------------------|-------------|
+| `remote_webview.refresh`   | Reloads the current page on the server and pushes a fresh full frame, even if the URL did not change. Needs server 1.1.4+. |
+
+```yaml
+button:
+  - platform: template
+    name: "Refresh Display"
+    on_press:
+      - remote_webview.refresh: rwv
+```
 
 ## Recommendations
 

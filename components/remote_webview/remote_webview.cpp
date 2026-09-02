@@ -17,13 +17,31 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.7";
+static const char *const RWV_VERSION = "0.3.8";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
-static inline void websocket_force_reconnect(esp_websocket_client_handle_t client) {
-  if (!client) return;
-  esp_websocket_client_stop(client);
-  esp_websocket_client_start(client);
+void RemoteWebView::add_on_connect_callback(std::function<void()> &&callback) {
+  this->on_connect_callback_.add(std::move(callback));
+}
+
+void RemoteWebView::add_on_disconnect_callback(std::function<void()> &&callback) {
+  this->on_disconnect_callback_.add(std::move(callback));
+}
+
+bool RemoteWebView::is_connected() const {
+  return ws_client_ && esp_websocket_client_is_connected(ws_client_);
+}
+
+void RemoteWebView::loop() {
+  // Callbacks run here (main loop), never in the websocket task.
+  if (this->disconnect_pending_.exchange(false, std::memory_order_acq_rel)) {
+    ESP_LOGD(TAG, "on_disconnect");
+    this->on_disconnect_callback_.call();
+  }
+  if (this->connect_pending_.exchange(false, std::memory_order_acq_rel)) {
+    ESP_LOGD(TAG, "on_connect");
+    this->on_connect_callback_.call();
+  }
 }
 
 void RemoteWebView::setup() {
@@ -127,19 +145,25 @@ void RemoteWebView::dump_config() {
   print_opt_int   ("rotation",                  rotation_);
 }
 
-bool RemoteWebView::open_url(const std::string &s) {
+bool RemoteWebView::open_url(const std::string &s, bool force) {
   if (s.empty()) return false;
   
   if (!ws_client_ || !esp_websocket_client_is_connected(ws_client_))
     return false;
   
-  if (ws_send_open_url_(s.c_str(), 0)) {
+  const uint16_t flags = force ? proto::kFlagOpenURLForce : 0;
+  if (ws_send_open_url_(s.c_str(), flags)) {
     url_ = s;
-    ESP_LOGD(TAG, "opened URL: %s", s.c_str());
+    ESP_LOGD(TAG, "opened URL: %s%s", s.c_str(), force ? " (force)" : "");
     return true;
   }
   
   return false;
+}
+
+bool RemoteWebView::refresh() {
+  if (url_.empty()) return false;
+  return open_url(url_, true);
 }
 
 void RemoteWebView::start_ws_task_() {
@@ -152,12 +176,23 @@ void RemoteWebView::ws_task_tramp_(void *arg) {
   std::string uri_str = self->build_ws_uri_();
   esp_websocket_client_config_t cfg_ws = {};
   cfg_ws.uri = uri_str.c_str();
-  cfg_ws.reconnect_timeout_ms = 2000;
-  cfg_ws.network_timeout_ms   = 10000;
+  cfg_ws.reconnect_timeout_ms = cfg::ws_reconnect_timeout_ms;
+  cfg_ws.network_timeout_ms   = cfg::ws_network_timeout_ms;
   cfg_ws.task_stack           = cfg::ws_task_stack;
   cfg_ws.task_prio            = cfg::ws_task_prio;
   cfg_ws.buffer_size          = cfg::ws_buffer_size;
   cfg_ws.disable_auto_reconnect = false;
+  // Without this the client task simply exits when the *server* closes the
+  // socket (server restart, add-on update, duplicate-id kick) and nothing
+  // ever reconnects.
+  cfg_ws.enable_close_reconnect = true;
+  // Detect half-open connections quickly instead of the 120 s default.
+  cfg_ws.ping_interval_sec    = cfg::ws_ping_interval_sec;
+  cfg_ws.pingpong_timeout_sec = cfg::ws_pingpong_timeout_sec;
+  cfg_ws.keep_alive_enable    = true;
+  cfg_ws.keep_alive_idle      = cfg::ws_tcp_keepalive_idle_s;
+  cfg_ws.keep_alive_interval  = cfg::ws_tcp_keepalive_intvl_s;
+  cfg_ws.keep_alive_count     = cfg::ws_tcp_keepalive_count;
 
   WsReasm reasm{};
   esp_websocket_client_handle_t client = esp_websocket_client_init(&cfg_ws);
@@ -165,15 +200,29 @@ void RemoteWebView::ws_task_tramp_(void *arg) {
   ESP_ERROR_CHECK(esp_websocket_client_start(client));
 
   for (;;) {
-    vTaskDelay(pdMS_TO_TICKS(5000));
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    const uint64_t now = esp_timer_get_time();
 
     if (!esp_websocket_client_is_connected(client)) {
-      websocket_force_reconnect(client);
+      // The client's own auto-reconnect (reconnect_timeout_ms) handles
+      // transient drops. Only if it stays down far longer than that do we
+      // assume the client task died and restart it from here. This task is
+      // not the websocket task, so stop()/start() are allowed.
+      if (self->disconnected_since_us_ == 0) self->disconnected_since_us_ = now;
+      if (now - self->disconnected_since_us_ >= cfg::ws_supervisor_restart_after_us) {
+        ESP_LOGW(TAG, "[ws] still disconnected after %u s, restarting client",
+                 (unsigned)(cfg::ws_supervisor_restart_after_us / 1000000ULL));
+        esp_websocket_client_stop(client);   // ESP_FAIL if the task already exited; harmless
+        if (esp_websocket_client_start(client) != ESP_OK) {
+          ESP_LOGE(TAG, "[ws] restart failed");
+        }
+        self->disconnected_since_us_ = now;
+      }
       continue;
     }
+    self->disconnected_since_us_ = 0;
 
-    if (self && self->ws_client_ && esp_websocket_client_is_connected(self->ws_client_)) {
-      const uint64_t now = esp_timer_get_time();
+    if (self->ws_client_) {
       if (now - self->last_keepalive_us_ >= cfg::ws_keepalive_interval_us) {
         if (self->ws_send_keepalive_()) {
           self->last_keepalive_us_ = now;
@@ -202,25 +251,39 @@ void RemoteWebView::ws_event_handler_(void *handler_arg, esp_event_base_t, int32
       if (self_ && !self_->url_.empty()) {
         self_->ws_send_open_url_(self_->url_.c_str(), 0);
       }
+      if (self_) {
+        self_->was_connected_.store(true, std::memory_order_release);
+        self_->connect_pending_.store(true, std::memory_order_release);
+      }
       break;
 
+    // No stop()/start() here: this handler runs inside the websocket task,
+    // where stop() is refused and start() would spawn a second task racing
+    // the one that is still shutting down. Auto reconnect (plus
+    // enable_close_reconnect) handles both cases; the supervisor task is
+    // the backstop.
     case WEBSOCKET_EVENT_DISCONNECTED:
       if (self_) self_->ws_client_ = nullptr;
       ESP_LOGI(TAG, "[ws] disconnected");
-      if (self_) self_->last_keepalive_us_ = 0; 
+      if (self_) self_->last_keepalive_us_ = 0;
+      // DISCONNECTED also fires for every failed reconnect attempt; only
+      // report the transition connected -> disconnected.
+      if (self_ && self_->was_connected_.exchange(false, std::memory_order_acq_rel))
+        self_->disconnect_pending_.store(true, std::memory_order_release);
       reasm_reset_(*r);
-      websocket_force_reconnect(e->client);
       break;
 
-#ifdef WEBSOCKET_EVENT_CLOSED
+    // Note: WEBSOCKET_EVENT_CLOSED is an enum, not a macro. The upstream
+    // `#ifdef WEBSOCKET_EVENT_CLOSED` guard was always false, so a clean
+    // server-side close was never handled at all.
     case WEBSOCKET_EVENT_CLOSED:
       if (self_) self_->ws_client_ = nullptr;
-      ESP_LOGI(TAG, "[ws] closed");
-      if (self_) self_->last_keepalive_us_ = 0; 
+      ESP_LOGI(TAG, "[ws] closed by server");
+      if (self_) self_->last_keepalive_us_ = 0;
+      if (self_ && self_->was_connected_.exchange(false, std::memory_order_acq_rel))
+        self_->disconnect_pending_.store(true, std::memory_order_release);
       reasm_reset_(*r);
-      websocket_force_reconnect(e->client);
       break;
-#endif
 
     case WEBSOCKET_EVENT_DATA: {
       if (!self_) break;

@@ -1,9 +1,10 @@
 import re
 import esphome.codegen as cg
 import esphome.config_validation as cv
+from esphome import automation
 from esphome.components import display, touchscreen
 from esphome.components.display import validate_rotation
-from esphome.const import CONF_ID, CONF_DISPLAY_ID, CONF_URL, CONF_ROTATION
+from esphome.const import CONF_ID, CONF_DISPLAY_ID, CONF_URL, CONF_ROTATION, CONF_TRIGGER_ID
 
 
 CONF_DEVICE_ID = "device_id"
@@ -18,6 +19,8 @@ CONF_MIN_FRAME_INTERVAL = "min_frame_interval"
 CONF_JPEG_QUALITY = "jpeg_quality"
 CONF_MAX_BYTES_PER_MSG = "max_bytes_per_msg"
 CONF_BIG_ENDIAN = "big_endian"
+CONF_ON_CONNECT = "on_connect"
+CONF_ON_DISCONNECT = "on_disconnect"
 
 _SERVER_RE = re.compile(
     r"^(?P<host>[A-Za-z0-9](?:[A-Za-z0-9\-\.]*[A-Za-z0-9])?)\:(?P<port>\d{1,5})$"
@@ -42,6 +45,9 @@ def validate_host_port(value):
 
 ns = cg.esphome_ns.namespace("remote_webview")
 RemoteWebView = ns.class_("RemoteWebView", cg.Component)
+OnConnectTrigger = ns.class_("OnConnectTrigger", automation.Trigger.template())
+OnDisconnectTrigger = ns.class_("OnDisconnectTrigger", automation.Trigger.template())
+RefreshAction = ns.class_("RefreshAction", automation.Action)
 
 CONFIG_SCHEMA = cv.Schema(
     {
@@ -62,8 +68,24 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_MAX_BYTES_PER_MSG): cv.int_,
         cv.Optional(CONF_BIG_ENDIAN): cv.boolean,
         cv.Optional(CONF_ROTATION): validate_rotation,
+        cv.Optional(CONF_ON_CONNECT): automation.validate_automation(
+            {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(OnConnectTrigger)}
+        ),
+        cv.Optional(CONF_ON_DISCONNECT): automation.validate_automation(
+            {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(OnDisconnectTrigger)}
+        ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
+
+REFRESH_ACTION_SCHEMA = automation.maybe_simple_id(
+    {cv.GenerateID(CONF_ID): cv.use_id(RemoteWebView)}
+)
+
+
+@automation.register_action("remote_webview.refresh", RefreshAction, REFRESH_ACTION_SCHEMA)
+async def remote_webview_refresh_to_code(config, action_id, template_arg, args):
+    paren = await cg.get_variable(config[CONF_ID])
+    return cg.new_Pvariable(action_id, template_arg, paren)
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
@@ -100,5 +122,11 @@ async def to_code(config):
     if CONF_ROTATION in config:
         cg.add(var.set_rotation(config[CONF_ROTATION]))
 
+    for conf in config.get(CONF_ON_CONNECT, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [], conf)
+    for conf in config.get(CONF_ON_DISCONNECT, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [], conf)
 
     await cg.register_component(var, config)
