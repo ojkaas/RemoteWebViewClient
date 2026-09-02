@@ -49,6 +49,9 @@ class RemoteWebView : public Component {
   void set_max_bytes_per_msg(int v) { max_bytes_per_msg_ = v; }
   void set_big_endian(bool v) { rgb565_big_endian_ = v; }
   void set_rotation(int v) { rotation_ = v; }
+  void set_chroma_subsampling(const std::string &s) { chroma_ = s; }      // "444" | "420"
+  void set_screencast_format(const std::string &s) { screencast_format_ = s; }  // "png" | "jpeg"
+  void set_screencast_quality(int v) { screencast_quality_ = v; }
   void disable_touch(bool disable);
   bool open_url(const std::string &s, bool force = false);
   // Ask the server to reload the current page and push a full frame.
@@ -110,6 +113,9 @@ class RemoteWebView : public Component {
   bool rgb565_big_endian_{true};
   int rotation_{0};
   bool touch_disabled_{false};
+  std::string chroma_;
+  std::string screencast_format_;
+  int screencast_quality_{-1};
 
 #if REMOTE_WEBVIEW_HW_JPEG
   jpeg_decoder_handle_t hw_dec_{nullptr};
@@ -139,6 +145,12 @@ class RemoteWebView : public Component {
   std::atomic<uint32_t> stat_frame_time_ms_{0};
   std::atomic<uint32_t> connect_count_{0};
   uint32_t last_stats_publish_ms_{0};
+  // Latency breakdown (diagnostic only; benign cross-task races).
+  uint32_t lat_fid_{0xffffffffu};   // frame currently being timed
+  uint64_t lat_rx_first_us_{0};    // first fragment of the frame seen by the WS task
+  uint64_t lat_rx_last_us_{0};     // last packet of the frame fully reassembled
+  uint64_t lat_decoded_us_{0};     // last tile drawn, ack enqueued
+  uint32_t lat_bytes_{0};
   bool connected_published_{false};
   bool connected_state_{false};
   

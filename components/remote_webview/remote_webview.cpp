@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.9";
+static const char *const RWV_VERSION = "0.3.10";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 void RemoteWebView::add_on_connect_callback(std::function<void()> &&callback) {
@@ -166,6 +166,9 @@ void RemoteWebView::dump_config() {
   print_opt_int   ("max_bytes_per_msg",         max_bytes_per_msg_);
   print_opt_int   ("big_endian",                rgb565_big_endian_);
   print_opt_int   ("rotation",                  rotation_);
+  if (!chroma_.empty()) ESP_LOGCONFIG(TAG, "  chroma_subsampling: %s", chroma_.c_str());
+  if (!screencast_format_.empty()) ESP_LOGCONFIG(TAG, "  screencast_format: %s", screencast_format_.c_str());
+  print_opt_int   ("screencast_quality",        screencast_quality_);
 }
 
 bool RemoteWebView::open_url(const std::string &s, bool force) {
@@ -319,6 +322,15 @@ void RemoteWebView::ws_event_handler_(void *handler_arg, esp_event_base_t, int32
 
       if (e->payload_offset == 0) {
         reasm_reset_(*r);
+        // Latency probe: first fragment of a new frame id.
+        if (frag_len >= sizeof(proto::FrameHeader) && frag[0] == (uint8_t)proto::MsgType::Frame) {
+          const uint32_t fid = proto::rd32(frag + 2);
+          if (fid != self_->lat_fid_) {
+            self_->lat_fid_ = fid;
+            self_->lat_rx_first_us_ = esp_timer_get_time();
+            self_->lat_bytes_ = 0;
+          }
+        }
         const size_t max_allowed = (self_ && self_->max_bytes_per_msg_ > 0) 
                                    ? (size_t)self_->max_bytes_per_msg_ 
                                    : cfg::ws_max_message_bytes;
@@ -343,6 +355,10 @@ void RemoteWebView::ws_event_handler_(void *handler_arg, esp_event_base_t, int32
       if (new_filled > r->filled) r->filled = new_filled;
 
       if (r->filled == r->total) {
+        if (r->total >= sizeof(proto::FrameHeader) && r->buf[0] == (uint8_t)proto::MsgType::Frame) {
+          self_->lat_bytes_ += r->total;
+          if (proto::rd16(r->buf + 9) & proto::kFlafLastOfFrame) self_->lat_rx_last_us_ = esp_timer_get_time();
+        }
         WsMsg m;
         m.buf = r->buf; m.len = r->total; m.client = e->client;
         r->buf = nullptr; r->total = 0; r->filled = 0;
@@ -444,9 +460,20 @@ void RemoteWebView::send_task_tramp_(void *arg) {
       continue;
     const uint8_t *data = m.heap ? m.heap : m.buf;
     if (self->ws_client_ && esp_websocket_client_is_connected(self->ws_client_)) {
-      // Short timeout — the WS client releases its lock every ~100ms
-      // (network_timeout_ms). Retry on next queue iteration if needed.
-      esp_websocket_client_send_bin(self->ws_client_, (const char *)data, (int)m.len, pdMS_TO_TICKS(150));
+      const uint64_t t0 = esp_timer_get_time();
+      const int r = esp_websocket_client_send_bin(self->ws_client_, (const char *)data, (int)m.len, pdMS_TO_TICKS(150));
+      if (cfg::latency_log_every && data[0] == (uint8_t)proto::MsgType::FrameAck) {
+        const uint64_t now = esp_timer_get_time();
+        const uint32_t fid = proto::rd32(data + 2);
+        if (fid % cfg::latency_log_every == 0) {
+          ESP_LOGD(TAG, "lat frame %lu: %u B, rx %lu ms, decode %lu ms, ack-wait %lu ms, ack-send %lu ms (r=%d)",
+                   (unsigned long)fid, (unsigned)self->lat_bytes_,
+                   (unsigned long)((self->lat_rx_last_us_ - self->lat_rx_first_us_) / 1000),
+                   (unsigned long)((self->lat_decoded_us_ - self->lat_rx_last_us_) / 1000),
+                   (unsigned long)((t0 - self->lat_decoded_us_) / 1000),
+                   (unsigned long)((now - t0) / 1000), r);
+        }
+      }
     }
     if (m.heap) free(m.heap);
   }
@@ -530,6 +557,7 @@ void RemoteWebView::process_frame_packet_(const uint8_t *data, size_t len)
     stat_frame_time_ms_.fetch_add(time_ms, std::memory_order_acq_rel);
     // Flow control: tell the server this frame is on the glass so it may
     // encode the next one. Sent even if a tile failed to decode.
+    lat_decoded_us_ = esp_timer_get_time();
     ws_send_frame_ack_(fi.frame_id);
     //ESP_LOGD(TAG, "frame %lu: tiles %u (%u bytes) - %lu ms", frame_id_, frame_tiles_, frame_bytes_, time_ms);
   }
@@ -883,6 +911,9 @@ std::string RemoteWebView::build_ws_uri_() const {
   append_q_int_(uri,   "q",    jpeg_quality_);
   append_q_int_(uri,   "mbpm", max_bytes_per_msg_);
   append_q_int_(uri,   "ack",  1);  // this client sends FrameAck; server keeps one frame in flight
+  append_q_str_(uri,   "chroma", chroma_.c_str());
+  append_q_str_(uri,   "scf",  screencast_format_.c_str());
+  append_q_int_(uri,   "scq",  screencast_quality_);
 
   return uri;
 }

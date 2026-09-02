@@ -33,6 +33,9 @@ inline constexpr uint64_t ws_supervisor_restart_after_us = 30ULL * 1000 * 1000;
 inline constexpr int send_queue_depth = 32;
 inline constexpr int send_task_stack  = 4096;
 
+// Log a per-frame latency breakdown (rx / decode / ack) every N frames; 0 disables.
+inline constexpr uint32_t latency_log_every = 50;
+
 inline constexpr bool coalesce_moves = true;
 inline constexpr uint32_t move_rate_hz = 60;
 
