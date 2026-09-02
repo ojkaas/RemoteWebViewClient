@@ -52,6 +52,7 @@ class RemoteWebView : public Component {
   void set_chroma_subsampling(const std::string &s) { chroma_ = s; }      // "444" | "420"
   void set_screencast_format(const std::string &s) { screencast_format_ = s; }  // "png" | "jpeg"
   void set_screencast_quality(int v) { screencast_quality_ = v; }
+  void set_reduced_motion(bool v) { reduced_motion_ = v ? 1 : 0; }
   void disable_touch(bool disable);
   bool open_url(const std::string &s, bool force = false);
   // Ask the server to reload the current page and push a full frame.
@@ -116,6 +117,7 @@ class RemoteWebView : public Component {
   std::string chroma_;
   std::string screencast_format_;
   int screencast_quality_{-1};
+  int reduced_motion_{-1};
 
 #if REMOTE_WEBVIEW_HW_JPEG
   jpeg_decoder_handle_t hw_dec_{nullptr};
