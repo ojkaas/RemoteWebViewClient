@@ -2,9 +2,13 @@ import re
 import esphome.codegen as cg
 import esphome.config_validation as cv
 from esphome import automation
-from esphome.components import display, touchscreen
+from esphome.components import display, touchscreen, binary_sensor, sensor
 from esphome.components.display import validate_rotation
-from esphome.const import CONF_ID, CONF_DISPLAY_ID, CONF_URL, CONF_ROTATION, CONF_TRIGGER_ID
+from esphome.const import (
+    CONF_ID, CONF_DISPLAY_ID, CONF_URL, CONF_ROTATION, CONF_TRIGGER_ID,
+    DEVICE_CLASS_CONNECTIVITY, ENTITY_CATEGORY_DIAGNOSTIC, STATE_CLASS_MEASUREMENT, STATE_CLASS_TOTAL_INCREASING,
+    UNIT_MILLISECOND,
+)
 
 
 CONF_DEVICE_ID = "device_id"
@@ -21,12 +25,16 @@ CONF_MAX_BYTES_PER_MSG = "max_bytes_per_msg"
 CONF_BIG_ENDIAN = "big_endian"
 CONF_ON_CONNECT = "on_connect"
 CONF_ON_DISCONNECT = "on_disconnect"
+CONF_CONNECTED_SENSOR = "connected_sensor"
+CONF_FPS_SENSOR = "fps_sensor"
+CONF_FRAME_TIME_SENSOR = "frame_time_sensor"
+CONF_RECONNECTS_SENSOR = "reconnects_sensor"
 
 _SERVER_RE = re.compile(
     r"^(?P<host>[A-Za-z0-9](?:[A-Za-z0-9\-\.]*[A-Za-z0-9])?)\:(?P<port>\d{1,5})$"
 )
 
-AUTO_LOAD = []
+AUTO_LOAD = ["binary_sensor", "sensor"]
 DEPENDENCIES = ["display"]
 
 def validate_host_port(value):
@@ -73,6 +81,27 @@ CONFIG_SCHEMA = cv.Schema(
         ),
         cv.Optional(CONF_ON_DISCONNECT): automation.validate_automation(
             {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(OnDisconnectTrigger)}
+        ),
+        cv.Optional(CONF_CONNECTED_SENSOR): binary_sensor.binary_sensor_schema(
+            device_class=DEVICE_CLASS_CONNECTIVITY,
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_FPS_SENSOR): sensor.sensor_schema(
+            unit_of_measurement="fps",
+            accuracy_decimals=1,
+            state_class=STATE_CLASS_MEASUREMENT,
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_FRAME_TIME_SENSOR): sensor.sensor_schema(
+            unit_of_measurement=UNIT_MILLISECOND,
+            accuracy_decimals=0,
+            state_class=STATE_CLASS_MEASUREMENT,
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+        ),
+        cv.Optional(CONF_RECONNECTS_SENSOR): sensor.sensor_schema(
+            accuracy_decimals=0,
+            state_class=STATE_CLASS_TOTAL_INCREASING,
+            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
@@ -128,5 +157,18 @@ async def to_code(config):
     for conf in config.get(CONF_ON_DISCONNECT, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [], conf)
+
+    if CONF_CONNECTED_SENSOR in config:
+        bs = await binary_sensor.new_binary_sensor(config[CONF_CONNECTED_SENSOR])
+        cg.add(var.set_connected_sensor(bs))
+    if CONF_FPS_SENSOR in config:
+        s = await sensor.new_sensor(config[CONF_FPS_SENSOR])
+        cg.add(var.set_fps_sensor(s))
+    if CONF_FRAME_TIME_SENSOR in config:
+        s = await sensor.new_sensor(config[CONF_FRAME_TIME_SENSOR])
+        cg.add(var.set_frame_time_sensor(s))
+    if CONF_RECONNECTS_SENSOR in config:
+        s = await sensor.new_sensor(config[CONF_RECONNECTS_SENSOR])
+        cg.add(var.set_reconnects_sensor(s))
 
     await cg.register_component(var, config)

@@ -11,7 +11,8 @@ constexpr uint8_t kFlagIsFullFrame = 1u<<1;
 // OpenURL flags
 constexpr uint16_t kFlagOpenURLForce = 1u<<0;  // reload even if the URL is unchanged
 
-enum class MsgType   : uint8_t { Unknown = 0, Frame = 1, Touch = 2, FrameStats = 3, OpenURL = 4, Keepalive = 5 };
+// 6..8 are reserved for upstream/micoli extensions (CurrentURL, DeviceList, KillDevice)
+enum class MsgType   : uint8_t { Unknown = 0, Frame = 1, Touch = 2, FrameStats = 3, OpenURL = 4, Keepalive = 5, FrameAck = 9 };
 enum class Encoding  : uint8_t { Unknown = 0, PNG = 1, JPEG = 2, RAW565 = 3, RAW565_RLE = 4, RAW565_LZ4 = 5 };
 enum class TouchType : uint8_t { Unknown = 0, Down = 1, Move = 2, Up = 3 };
 
@@ -68,6 +69,16 @@ struct RWV_PACKED FrameStatsPacket {
   uint32_t bytes;
 };
 static_assert(sizeof(FrameStatsPacket) == 10, "FrameStatsPacket wire size must be 10");
+
+// [type:1][ver:1][frame_id:4] => 6 bytes. Sent by the client once the last
+// packet of a frame has been decoded and drawn; the server keeps at most one
+// frame in flight per client.
+struct RWV_PACKED FrameAckPacket {
+  MsgType type;
+  uint8_t ver;
+  uint32_t frame_id;
+};
+static_assert(sizeof(FrameAckPacket) == 6, "FrameAckPacket wire size must be 6");
 
 // [type:1][ver:1] => 2 bytes
 struct RWV_PACKED KeepalivePacket {
@@ -168,6 +179,15 @@ inline size_t build_frame_stats_packet(uint32_t avg_time, uint32_t bytes, uint8_
 
   memcpy(out, &pkt, sizeof(pkt));
   return sizeof(pkt);
+}
+
+inline size_t build_frame_ack_packet(uint32_t frame_id, uint8_t *out) {
+  if (!out) return 0;
+  out[0] = static_cast<uint8_t>(MsgType::FrameAck);
+  out[1] = kProtocolVersion;
+  out[2] = (uint8_t)frame_id; out[3] = (uint8_t)(frame_id >> 8);
+  out[4] = (uint8_t)(frame_id >> 16); out[5] = (uint8_t)(frame_id >> 24);
+  return sizeof(FrameAckPacket);
 }
 
 inline size_t build_keepalive_packet(uint8_t *out) {

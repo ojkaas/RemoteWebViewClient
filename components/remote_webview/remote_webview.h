@@ -4,6 +4,8 @@
 #include <atomic>
 #include "esphome/components/display/display.h"
 #include "esphome/components/touchscreen/touchscreen.h"
+#include "esphome/components/binary_sensor/binary_sensor.h"
+#include "esphome/components/sensor/sensor.h"
 #include "JPEGDEC.h"
 #include "protocol.h"
 #include "remote_webview_config.h"
@@ -55,6 +57,12 @@ class RemoteWebView : public Component {
 
   void add_on_connect_callback(std::function<void()> &&callback);
   void add_on_disconnect_callback(std::function<void()> &&callback);
+
+  // Optional diagnostics exposed to Home Assistant (published from loop()).
+  void set_connected_sensor(binary_sensor::BinarySensor *s) { connected_sensor_ = s; }
+  void set_fps_sensor(sensor::Sensor *s) { fps_sensor_ = s; }
+  void set_frame_time_sensor(sensor::Sensor *s) { frame_time_sensor_ = s; }
+  void set_reconnects_sensor(sensor::Sensor *s) { reconnects_sensor_ = s; }
 
   void setup() override;
   void loop() override;
@@ -121,6 +129,18 @@ class RemoteWebView : public Component {
   std::atomic<bool> was_connected_{false};  // so failed reconnect attempts don't re-fire on_disconnect
   CallbackManager<void()> on_connect_callback_{};
   CallbackManager<void()> on_disconnect_callback_{};
+
+  binary_sensor::BinarySensor *connected_sensor_{nullptr};
+  sensor::Sensor *fps_sensor_{nullptr};
+  sensor::Sensor *frame_time_sensor_{nullptr};
+  sensor::Sensor *reconnects_sensor_{nullptr};
+  // Written by the decode task, read by loop().
+  std::atomic<uint32_t> stat_frames_{0};
+  std::atomic<uint32_t> stat_frame_time_ms_{0};
+  std::atomic<uint32_t> connect_count_{0};
+  uint32_t last_stats_publish_ms_{0};
+  bool connected_published_{false};
+  bool connected_state_{false};
   
   uint64_t frame_start_us_ = 0;
   uint32_t frame_id_{0xffffffffu};
@@ -161,6 +181,7 @@ class RemoteWebView : public Component {
 
   bool ws_send_touch_event_(proto::TouchType type, int x, int y, uint8_t pid);
   bool ws_send_keepalive_();
+  bool ws_send_frame_ack_(uint32_t frame_id);
   bool ws_send_open_url_(const char *url, uint16_t flags);
 
   std::string resolve_device_id_() const;

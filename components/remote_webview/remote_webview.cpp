@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.8";
+static const char *const RWV_VERSION = "0.3.9";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 void RemoteWebView::add_on_connect_callback(std::function<void()> &&callback) {
@@ -41,6 +41,29 @@ void RemoteWebView::loop() {
   if (this->connect_pending_.exchange(false, std::memory_order_acq_rel)) {
     ESP_LOGD(TAG, "on_connect");
     this->on_connect_callback_.call();
+  }
+
+  // Diagnostics, 1 Hz. Cheap when no sensors are configured.
+  const bool connected = is_connected();
+  if (connected_sensor_ && (!connected_published_ || connected != connected_state_)) {
+    connected_state_ = connected;
+    connected_published_ = true;
+    connected_sensor_->publish_state(connected);
+  }
+  const uint32_t now_ms = millis();
+  if (now_ms - last_stats_publish_ms_ >= 1000) {
+    const uint32_t dt = now_ms - last_stats_publish_ms_;
+    last_stats_publish_ms_ = now_ms;
+    const uint32_t frames = stat_frames_.exchange(0, std::memory_order_acq_rel);
+    const uint32_t tsum = stat_frame_time_ms_.exchange(0, std::memory_order_acq_rel);
+    if (fps_sensor_) fps_sensor_->publish_state(dt ? (frames * 1000.0f / dt) : 0.0f);
+    if (frame_time_sensor_ && frames) frame_time_sensor_->publish_state((float)tsum / frames);
+    if (reconnects_sensor_) {
+      const uint32_t c = connect_count_.load(std::memory_order_acquire);
+      const float reconnects = c > 0 ? (float)(c - 1) : 0.0f;
+      if (!reconnects_sensor_->has_state() || reconnects_sensor_->state != reconnects)
+        reconnects_sensor_->publish_state(reconnects);
+    }
   }
 }
 
@@ -254,6 +277,7 @@ void RemoteWebView::ws_event_handler_(void *handler_arg, esp_event_base_t, int32
       if (self_) {
         self_->was_connected_.store(true, std::memory_order_release);
         self_->connect_pending_.store(true, std::memory_order_release);
+        self_->connect_count_.fetch_add(1, std::memory_order_acq_rel);
       }
       break;
 
@@ -502,6 +526,11 @@ void RemoteWebView::process_frame_packet_(const uint8_t *data, size_t len)
     frame_stats_bytes_ += frame_bytes_;
     frame_stats_time_ += time_ms;
     frame_stats_count_++;
+    stat_frames_.fetch_add(1, std::memory_order_acq_rel);
+    stat_frame_time_ms_.fetch_add(time_ms, std::memory_order_acq_rel);
+    // Flow control: tell the server this frame is on the glass so it may
+    // encode the next one. Sent even if a tile failed to decode.
+    ws_send_frame_ack_(fi.frame_id);
     //ESP_LOGD(TAG, "frame %lu: tiles %u (%u bytes) - %lu ms", frame_id_, frame_tiles_, frame_bytes_, time_ms);
   }
 }
@@ -666,6 +695,16 @@ bool RemoteWebView::ws_send_open_url_(const char *url, uint16_t flags) {
 
   // ws_enqueue_send_ takes ownership of pkt (freed after send or on queue-full)
   return ws_enqueue_send_(pkt, written, pkt, pdMS_TO_TICKS(100));
+}
+
+bool RemoteWebView::ws_send_frame_ack_(uint32_t frame_id) {
+  if (!ws_client_ || !esp_websocket_client_is_connected(ws_client_))
+    return false;
+  uint8_t pkt[sizeof(proto::FrameAckPacket)];
+  const size_t n = proto::build_frame_ack_packet(frame_id, pkt);
+  if (!n) return false;
+  // Acks gate the server's next frame; wait a little rather than drop.
+  return ws_enqueue_send_(pkt, n, nullptr, pdMS_TO_TICKS(100));
 }
 
 bool RemoteWebView::ws_send_keepalive_() {
@@ -843,6 +882,7 @@ std::string RemoteWebView::build_ws_uri_() const {
   append_q_int_(uri,   "mfi",  min_frame_interval_);
   append_q_int_(uri,   "q",    jpeg_quality_);
   append_q_int_(uri,   "mbpm", max_bytes_per_msg_);
+  append_q_int_(uri,   "ack",  1);  // this client sends FrameAck; server keeps one frame in flight
 
   return uri;
 }

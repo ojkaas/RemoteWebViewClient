@@ -34,6 +34,8 @@ This is a client that connects to [Remote WebView Server](https://github.com/str
 - **Clean server close was never handled** — the `WEBSOCKET_EVENT_CLOSED` case was wrapped in `#ifdef WEBSOCKET_EVENT_CLOSED`, but that identifier is an enum, so the case never compiled. It is now handled like a disconnect.
 - **Fast dead-connection detection** — WS ping every 5 s with a 15 s pong timeout (default was 120 s) plus TCP keepalive, so half-open sockets after a WiFi roam or AP reboot are noticed in seconds instead of minutes.
 - **`on_connect` / `on_disconnect` triggers** — run automations (dim the panel, log, notify) on connection state changes.
+- **FrameAck flow control (0.3.9)** — the client connects with `ack=1` and acks every frame once it is drawn; server 1.1.5+ keeps one frame in flight per client. Frames no longer pile up in TCP buffers on slow WiFi, and fast links no longer wait a fixed 100 ms between frames.
+- **Diagnostic sensors (0.3.9)** — optional `connected_sensor`, `fps_sensor`, `frame_time_sensor`, `reconnects_sensor` for Home Assistant.
 - **`remote_webview.refresh` action** — forces the server to reload the current page and push a full frame (requires server 1.1.4+).
 
 ### Other
@@ -222,6 +224,10 @@ text:
 | `rotation`              | int       | ❌       | 0, 90, 180, 270                   | Enables software rotation for both the display and touchscreen. |
 | `on_connect`            | automation| ❌       | `- logger.log: "connected"`       | Runs each time the WebSocket connection to the server is established. |
 | `on_disconnect`         | automation| ❌       | `- logger.log: "disconnected"`    | Runs each time the connection is lost or closed by the server. |
+| `connected_sensor`      | binary_sensor | ❌   | `name: "RWV Connected"`          | Connectivity to the server. |
+| `fps_sensor`            | sensor    | ❌       | `name: "RWV FPS"`                 | Frames drawn per second (1 s window). |
+| `frame_time_sensor`     | sensor    | ❌       | `name: "RWV Frame Time"`          | Average receive+decode time per frame, ms. |
+| `reconnects_sensor`     | sensor    | ❌       | `name: "RWV Reconnects"`          | Number of reconnects since boot. |
 
 ### Actions
 
