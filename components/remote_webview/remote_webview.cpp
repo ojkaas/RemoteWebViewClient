@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.10";
+static const char *const RWV_VERSION = "0.3.11";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 void RemoteWebView::add_on_connect_callback(std::function<void()> &&callback) {
@@ -171,6 +171,7 @@ void RemoteWebView::dump_config() {
   print_opt_int   ("screencast_quality",        screencast_quality_);
   print_opt_int   ("reduced_motion",            reduced_motion_);
   if (!screencast_mode_.empty()) ESP_LOGCONFIG(TAG, "  screencast_mode: %s", screencast_mode_.c_str());
+  print_opt_float2("rle_max_ratio",             rle_max_ratio_);
 }
 
 bool RemoteWebView::open_url(const std::string &s, bool force) {
@@ -545,6 +546,8 @@ void RemoteWebView::process_frame_packet_(const uint8_t *data, size_t len)
 
     if (fi.enc == proto::Encoding::JPEG && th.dlen) {
       decode_jpeg_tile_to_lcd_((int16_t)th.x, (int16_t)th.y, data + off, th.dlen);
+    } else if (fi.enc == proto::Encoding::RAW565_RLE && th.dlen) {
+      draw_rle_tile_((int16_t)th.x, (int16_t)th.y, th.w, th.h, data + off, th.dlen);
     }
     
     off += th.dlen;
@@ -645,6 +648,30 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
 #endif  // REMOTE_WEBVIEW_HW_JPEG
 
   return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
+}
+
+// RAW565_RLE: runs of [count u8][pixel u16 LE], raster order. Lossless.
+bool RemoteWebView::draw_rle_tile_(int16_t dst_x, int16_t dst_y, uint16_t w, uint16_t h, const uint8_t *data, size_t len) {
+  const size_t n = (size_t)w * h;
+  if (n == 0 || n > cfg::rle_max_pixels) return false;
+  if (!rle_buf_) {
+    rle_buf_ = (uint16_t *)heap_caps_malloc(cfg::rle_max_pixels * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!rle_buf_) rle_buf_ = (uint16_t *)heap_caps_malloc(cfg::rle_max_pixels * 2, MALLOC_CAP_8BIT);
+    if (!rle_buf_) { ESP_LOGE(TAG, "rle buffer alloc failed"); return false; }
+  }
+  size_t i = 0, o = 0;
+  while (i + 3 <= len && o < n) {
+    const uint8_t run = data[i];
+    uint16_t v = (uint16_t)data[i + 1] | ((uint16_t)data[i + 2] << 8);
+    if (rgb565_big_endian_) v = (uint16_t)((v << 8) | (v >> 8));
+    i += 3;
+    if (run == 0 || o + run > n) { ESP_LOGW(TAG, "bad rle run"); return false; }
+    for (uint8_t k = 0; k < run; k++) rle_buf_[o++] = v;
+  }
+  if (o != n) { ESP_LOGW(TAG, "rle short: %u/%u px", (unsigned)o, (unsigned)n); return false; }
+  display_->draw_pixels_at(dst_x, dst_y, (int)w, (int)h, (const uint8_t *)rle_buf_,
+      esphome::display::COLOR_ORDER_RGB, esphome::display::COLOR_BITNESS_565, rgb565_big_endian_);
+  return true;
 }
 
 bool RemoteWebView::decode_jpeg_tile_software_(int16_t dst_x, int16_t dst_y, const uint8_t *data, size_t len) {
@@ -918,6 +945,7 @@ std::string RemoteWebView::build_ws_uri_() const {
   append_q_int_(uri,   "scq",  screencast_quality_);
   append_q_int_(uri,   "prm",  reduced_motion_);   // emulate prefers-reduced-motion for this device
   append_q_str_(uri,   "scm",  screencast_mode_.c_str());
+  append_q_float_(uri, "rle",  rle_max_ratio_);
 
   return uri;
 }

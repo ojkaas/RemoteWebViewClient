@@ -54,6 +54,9 @@ class RemoteWebView : public Component {
   void set_screencast_quality(int v) { screencast_quality_ = v; }
   void set_reduced_motion(bool v) { reduced_motion_ = v ? 1 : 0; }
   void set_screencast_mode(const std::string &s) { screencast_mode_ = s; }  // "stream" | "ondemand"
+  // Lossless RLE565 for flat rects: server uses it when the rect compresses to
+  // at most this fraction of its raw size (0 = JPEG only). Needs server 1.1.22+.
+  void set_rle_max_ratio(float v) { rle_max_ratio_ = v; }
   void disable_touch(bool disable);
   bool open_url(const std::string &s, bool force = false);
   // Ask the server to reload the current page and push a full frame.
@@ -120,6 +123,8 @@ class RemoteWebView : public Component {
   int screencast_quality_{-1};
   int reduced_motion_{-1};
   std::string screencast_mode_;
+  float rle_max_ratio_{-1.0f};
+  uint16_t *rle_buf_{nullptr};
 
 #if REMOTE_WEBVIEW_HW_JPEG
   jpeg_decoder_handle_t hw_dec_{nullptr};
@@ -190,6 +195,7 @@ class RemoteWebView : public Component {
   void process_frame_stats_packet_(const uint8_t *data, size_t len);
   bool decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const uint8_t *data, size_t len);
   bool decode_jpeg_tile_software_(int16_t dst_x, int16_t dst_y, const uint8_t *data, size_t len);
+  bool draw_rle_tile_(int16_t dst_x, int16_t dst_y, uint16_t w, uint16_t h, const uint8_t *data, size_t len);
 
   static int jpeg_draw_cb_s_(JPEGDRAW *p);
   int jpeg_draw_cb_(JPEGDRAW *p);

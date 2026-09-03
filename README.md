@@ -222,6 +222,11 @@ text:
 | `max_bytes_per_msg`     | int (B)   | ❌       | `14336` or `61440`                | Upper bound for a single WS binary message. |
 | `big_endian`            | bool      | ❌       | `true` or `false`                 | Use big-endian RGB565 pixel order for JPEG output (set false for little-endian panels). Default is `true`. |
 | `rotation`              | int       | ❌       | 0, 90, 180, 270                   | Enables software rotation for both the display and touchscreen. |
+| `rle_max_ratio`         | float     | ❌       | `0.08`                            | Lossless RLE565 instead of JPEG for rects that compress to at most this fraction of their raw size (flat UI areas). Needs server 1.1.22+. |
+| `screencast_mode`       | string    | ❌       | `stream` / `ondemand`             | `ondemand` captures one Chromium frame per frame sent (server 1.1.19+). `stream` measured better. |
+| `reduced_motion`        | bool      | ❌       | `true`                            | Emulates `prefers-reduced-motion` for this device (server 1.1.13+). |
+| `chroma_subsampling`    | string    | ❌       | `"444"`                           | Tile JPEG chroma; keep 4:4:4 (4:2:0 flashes blocks on dark gradients). |
+| `screencast_format` / `screencast_quality` | string / int | ❌ | `png` / `90`            | Chromium capture format; PNG measured best. |
 | `on_connect`            | automation| ❌       | `- logger.log: "connected"`       | Runs each time the WebSocket connection to the server is established. |
 | `on_disconnect`         | automation| ❌       | `- logger.log: "disconnected"`    | Runs each time the connection is lost or closed by the server. |
 | `connected_sensor`      | binary_sensor | ❌   | `name: "RWV Connected"`          | Connectivity to the server. |
