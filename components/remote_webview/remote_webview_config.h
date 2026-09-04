@@ -49,7 +49,9 @@ inline constexpr size_t rle_max_pixels = 32768;
 // rects that compress to <= lossless_max_ratio * raw size (flat UI, text);
 // photo-like rects stay JPEG. Decoded with the ESP32-P4 ROM inflater into a
 // full-screen PSRAM buffer.
-inline constexpr float lossless_max_ratio_default = 0.5f;
+// Measured on the barcode UI: text/flat/gradient tiles deflate to < 0.2 of
+// raw, photo tiles to 0.25-0.5, so 0.2 separates them.
+inline constexpr float lossless_max_ratio_default = 0.2f;
 inline constexpr int   deflate_level_default = 6;
 
 // Log a per-frame latency breakdown (rx / decode / ack) every N frames; 0 disables.

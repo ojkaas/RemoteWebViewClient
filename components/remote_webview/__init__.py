@@ -93,7 +93,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_SCREENCAST_MODE): cv.one_of("stream", "ondemand", lower=True),
         cv.Optional(CONF_RLE_MAX_RATIO): cv.float_range(min=0.0, max=1.0),
         cv.Optional(CONF_HW_JPEG, default=True): cv.boolean,
-        cv.Optional(CONF_LOSSLESS_MAX_RATIO, default=0.5): cv.float_range(min=0.0, max=1.0),
+        cv.Optional(CONF_LOSSLESS_MAX_RATIO, default=0.2): cv.float_range(min=0.0, max=1.0),
         cv.Optional(CONF_DEFLATE_LEVEL, default=6): cv.int_range(min=1, max=9),
         cv.Optional(CONF_MAX_INFLIGHT): cv.int_range(min=1, max=4),
         cv.Optional(CONF_ON_CONNECT): automation.validate_automation(
