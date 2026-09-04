@@ -57,11 +57,16 @@ class RemoteWebView : public Component {
   // Lossless RLE565 for flat rects: server uses it when the rect compresses to
   // at most this fraction of its raw size (0 = JPEG only). Needs server 1.1.22+.
   void set_rle_max_ratio(float v) { rle_max_ratio_ = v; }
+  void set_lossless_max_ratio(float v) { lossless_max_ratio_ = v; }
+  void set_deflate_level(int v) { deflate_level_ = v; }
   // ESP32-P4 hardware JPEG decode (default on). The hardware applies a fixed
   // limited-range YUV->RGB expansion; the server (1.1.24+) pre-compensates
   // tiles of >= hw_jpeg_min_pixels for it (URL param hwj), so colours match
   // the software-decoded small tiles exactly.
   void set_hw_jpeg(bool v) { hw_jpeg_enabled_ = v; }
+  // Frames the server may have in flight to this panel (server 1.1.25+). 1 on
+  // weak WiFi halves queueing latency; 2 (server default) pipelines on good links.
+  void set_max_inflight(int v) { max_inflight_ = v; }
   void disable_touch(bool disable);
   bool open_url(const std::string &s, bool force = false);
   // Ask the server to reload the current page and push a full frame.
@@ -129,8 +134,13 @@ class RemoteWebView : public Component {
   int reduced_motion_{-1};
   std::string screencast_mode_;
   float rle_max_ratio_{-1.0f};
+  float lossless_max_ratio_{cfg::lossless_max_ratio_default};
+  int deflate_level_{cfg::deflate_level_default};
   bool hw_jpeg_enabled_{true};
+  int max_inflight_{-1};
   uint16_t *rle_buf_{nullptr};
+  uint8_t *lz_buf_{nullptr};      // full-screen RGB565 output buffer (PSRAM)
+  void *lz_dec_{nullptr};         // tinfl_decompressor (~11 KB, internal RAM)
 
 #if REMOTE_WEBVIEW_HW_JPEG
   jpeg_decoder_handle_t hw_dec_{nullptr};
@@ -205,6 +215,7 @@ class RemoteWebView : public Component {
   bool sw_expand_{false};
   bool decode_jpeg_tile_software_(int16_t dst_x, int16_t dst_y, const uint8_t *data, size_t len);
   bool draw_rle_tile_(int16_t dst_x, int16_t dst_y, uint16_t w, uint16_t h, const uint8_t *data, size_t len);
+  bool draw_deflate_tile_(int16_t dst_x, int16_t dst_y, uint16_t w, uint16_t h, const uint8_t *data, size_t len);
 
   static int jpeg_draw_cb_s_(JPEGDRAW *p);
   int jpeg_draw_cb_(JPEGDRAW *p);

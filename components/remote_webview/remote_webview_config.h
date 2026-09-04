@@ -45,6 +45,13 @@ inline constexpr uint32_t hw_jpeg_min_pixels = 64 * 64;
 // 2 bytes/pixel). Must match the server's rleMaxPixels.
 inline constexpr size_t rle_max_pixels = 32768;
 
+// Lossless RGB565 + deflate rects (server 1.1.29+): the server sends them for
+// rects that compress to <= lossless_max_ratio * raw size (flat UI, text);
+// photo-like rects stay JPEG. Decoded with the ESP32-P4 ROM inflater into a
+// full-screen PSRAM buffer.
+inline constexpr float lossless_max_ratio_default = 0.5f;
+inline constexpr int   deflate_level_default = 6;
+
 // Log a per-frame latency breakdown (rx / decode / ack) every N frames; 0 disables.
 inline constexpr uint32_t latency_log_every = 50;
 

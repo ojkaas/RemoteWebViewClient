@@ -10,6 +10,7 @@
 #include "esp_heap_caps.h"
 #include "esp_websocket_client.h"
 #include "esp_efuse.h"
+#include "miniz.h"   // ESP-IDF esp_rom: the ROM inflater (tinfl) on the P4
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -17,7 +18,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.13";
+static const char *const RWV_VERSION = "0.4.0";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 void RemoteWebView::add_on_connect_callback(std::function<void()> &&callback) {
@@ -172,6 +173,7 @@ void RemoteWebView::dump_config() {
   print_opt_int   ("reduced_motion",            reduced_motion_);
   if (!screencast_mode_.empty()) ESP_LOGCONFIG(TAG, "  screencast_mode: %s", screencast_mode_.c_str());
   print_opt_float2("rle_max_ratio",             rle_max_ratio_);
+  print_opt_int   ("max_inflight",              max_inflight_);
 }
 
 bool RemoteWebView::open_url(const std::string &s, bool force) {
@@ -550,6 +552,8 @@ void RemoteWebView::process_frame_packet_(const uint8_t *data, size_t len)
       decode_jpeg_tile_to_lcd_((int16_t)th.x, (int16_t)th.y, th.w, th.h, data + off, th.dlen);
     } else if (fi.enc == proto::Encoding::RAW565_RLE && th.dlen) {
       draw_rle_tile_((int16_t)th.x, (int16_t)th.y, th.w, th.h, data + off, th.dlen);
+    } else if (fi.enc == proto::Encoding::RAW565_DEFLATE && th.dlen) {
+      draw_deflate_tile_((int16_t)th.x, (int16_t)th.y, th.w, th.h, data + off, th.dlen);
     }
     
     off += th.dlen;
@@ -663,6 +667,36 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, uint1
 }
 
 // RAW565_RLE: runs of [count u8][pixel u16 LE], raster order. Lossless.
+bool RemoteWebView::draw_deflate_tile_(int16_t dst_x, int16_t dst_y, uint16_t w, uint16_t h, const uint8_t *data, size_t len) {
+  const size_t out_len = (size_t)w * h * 2;
+  const size_t cap = (size_t)display_width_ * display_height_ * 2;
+  if (out_len == 0 || out_len > cap) return false;
+  if (!lz_buf_) {
+    lz_buf_ = (uint8_t *)heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!lz_buf_) { ESP_LOGE(TAG, "deflate buffer alloc failed (%u B)", (unsigned)cap); return false; }
+  }
+  if (!lz_dec_) {
+    lz_dec_ = heap_caps_malloc(sizeof(tinfl_decompressor), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!lz_dec_) lz_dec_ = heap_caps_malloc(sizeof(tinfl_decompressor), MALLOC_CAP_8BIT);
+    if (!lz_dec_) { ESP_LOGE(TAG, "inflater alloc failed"); return false; }
+  }
+  tinfl_decompressor *dec = (tinfl_decompressor *)lz_dec_;
+  tinfl_init(dec);
+  size_t in_size = len, out_size = out_len;
+  const tinfl_status st = tinfl_decompress(dec, data, &in_size, lz_buf_, lz_buf_, &out_size,
+                                           TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
+  if (st != TINFL_STATUS_DONE || out_size != out_len) {
+    ESP_LOGW(TAG, "inflate failed: st=%d out=%u/%u in=%u/%u", (int)st, (unsigned)out_size, (unsigned)out_len, (unsigned)in_size, (unsigned)len);
+    return false;
+  }
+  if (rgb565_big_endian_) {
+    for (size_t i = 0; i + 1 < out_len; i += 2) { const uint8_t t = lz_buf_[i]; lz_buf_[i] = lz_buf_[i + 1]; lz_buf_[i + 1] = t; }
+  }
+  display_->draw_pixels_at(dst_x, dst_y, (int)w, (int)h, lz_buf_,
+      esphome::display::COLOR_ORDER_RGB, esphome::display::COLOR_BITNESS_565, rgb565_big_endian_);
+  return true;
+}
+
 bool RemoteWebView::draw_rle_tile_(int16_t dst_x, int16_t dst_y, uint16_t w, uint16_t h, const uint8_t *data, size_t len) {
   const size_t n = (size_t)w * h;
   if (n == 0 || n > cfg::rle_max_pixels) return false;
@@ -978,6 +1012,9 @@ std::string RemoteWebView::build_ws_uri_() const {
   append_q_int_(uri,   "prm",  reduced_motion_);   // emulate prefers-reduced-motion for this device
   append_q_str_(uri,   "scm",  screencast_mode_.c_str());
   append_q_float_(uri, "rle",  rle_max_ratio_);
+  append_q_float_(uri, "lz",   lossless_max_ratio_);   // RGB565+deflate rects (server 1.1.29+)
+  append_q_int_(uri,   "lzl",  deflate_level_);
+  append_q_int_(uri,   "mif",  max_inflight_);
 #if REMOTE_WEBVIEW_HW_JPEG
   append_q_int_(uri,   "hwj",  hw_jpeg_enabled_ ? (int)cfg::hw_jpeg_min_pixels : 0);  // server pre-compensates these tiles
 #else

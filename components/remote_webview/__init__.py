@@ -36,6 +36,9 @@ CONF_REDUCED_MOTION = "reduced_motion"
 CONF_SCREENCAST_MODE = "screencast_mode"
 CONF_RLE_MAX_RATIO = "rle_max_ratio"
 CONF_HW_JPEG = "hw_jpeg"
+CONF_LOSSLESS_MAX_RATIO = "lossless_max_ratio"
+CONF_DEFLATE_LEVEL = "deflate_level"
+CONF_MAX_INFLIGHT = "max_inflight"
 
 _SERVER_RE = re.compile(
     r"^(?P<host>[A-Za-z0-9](?:[A-Za-z0-9\-\.]*[A-Za-z0-9])?)\:(?P<port>\d{1,5})$"
@@ -90,6 +93,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_SCREENCAST_MODE): cv.one_of("stream", "ondemand", lower=True),
         cv.Optional(CONF_RLE_MAX_RATIO): cv.float_range(min=0.0, max=1.0),
         cv.Optional(CONF_HW_JPEG, default=True): cv.boolean,
+        cv.Optional(CONF_LOSSLESS_MAX_RATIO, default=0.5): cv.float_range(min=0.0, max=1.0),
+        cv.Optional(CONF_DEFLATE_LEVEL, default=6): cv.int_range(min=1, max=9),
+        cv.Optional(CONF_MAX_INFLIGHT): cv.int_range(min=1, max=4),
         cv.Optional(CONF_ON_CONNECT): automation.validate_automation(
             {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(OnConnectTrigger)}
         ),
@@ -177,6 +183,10 @@ async def to_code(config):
     if CONF_RLE_MAX_RATIO in config:
         cg.add(var.set_rle_max_ratio(config[CONF_RLE_MAX_RATIO]))
     cg.add(var.set_hw_jpeg(config[CONF_HW_JPEG]))
+    cg.add(var.set_lossless_max_ratio(config[CONF_LOSSLESS_MAX_RATIO]))
+    cg.add(var.set_deflate_level(config[CONF_DEFLATE_LEVEL]))
+    if CONF_MAX_INFLIGHT in config:
+        cg.add(var.set_max_inflight(config[CONF_MAX_INFLIGHT]))
 
     for conf in config.get(CONF_ON_CONNECT, []):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
