@@ -225,6 +225,8 @@ text:
 | `rotation`              | int       | ❌       | 0, 90, 180, 270                   | Enables software rotation for both the display and touchscreen. |
 | `hw_jpeg`               | bool      | ❌       | `true`                            | ESP32-P4 hardware JPEG decode for rects of 64x64 px and up (default true). |
 | `rle_max_ratio`         | float     | ❌       | `0.08`                            | Lossless RLE565 instead of JPEG for rects that compress to at most this fraction of their raw size (flat UI areas). Needs server 1.1.22+. |
+| `lossless_max_ratio`    | float     | ❌       | `0.5`                             | Lossless RGB565+deflate instead of JPEG for rects that compress to at most this fraction of their raw size (flat UI, text: 3-4x smaller than JPEG q100 and pixel-exact; photo-like rects stay JPEG). `0` disables. Decoded with the ESP32-P4 ROM inflater. Needs server 1.1.29+. |
+| `deflate_level`         | int 1-9   | ❌       | `6`                               | Server-side deflate level for lossless rects (higher = smaller, more server CPU). |
 | `screencast_mode`       | string    | ❌       | `stream` / `ondemand`             | `ondemand` captures one Chromium frame per frame sent (server 1.1.19+). `stream` measured better. |
 | `reduced_motion`        | bool      | ❌       | `true`                            | Emulates `prefers-reduced-motion` for this device (server 1.1.13+). |
 | `chroma_subsampling`    | string    | ❌       | `"444"`                           | Tile JPEG chroma; keep 4:4:4 (4:2:0 flashes blocks on dark gradients). |
