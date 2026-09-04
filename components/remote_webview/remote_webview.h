@@ -57,6 +57,11 @@ class RemoteWebView : public Component {
   // Lossless RLE565 for flat rects: server uses it when the rect compresses to
   // at most this fraction of its raw size (0 = JPEG only). Needs server 1.1.22+.
   void set_rle_max_ratio(float v) { rle_max_ratio_ = v; }
+  // ESP32-P4 hardware JPEG decode (default on). The hardware applies a fixed
+  // limited-range YUV->RGB expansion; the server (1.1.24+) pre-compensates
+  // tiles of >= hw_jpeg_min_pixels for it (URL param hwj), so colours match
+  // the software-decoded small tiles exactly.
+  void set_hw_jpeg(bool v) { hw_jpeg_enabled_ = v; }
   void disable_touch(bool disable);
   bool open_url(const std::string &s, bool force = false);
   // Ask the server to reload the current page and push a full frame.
@@ -124,6 +129,7 @@ class RemoteWebView : public Component {
   int reduced_motion_{-1};
   std::string screencast_mode_;
   float rle_max_ratio_{-1.0f};
+  bool hw_jpeg_enabled_{true};
   uint16_t *rle_buf_{nullptr};
 
 #if REMOTE_WEBVIEW_HW_JPEG
@@ -193,7 +199,10 @@ class RemoteWebView : public Component {
   void process_packet_(void *client, const uint8_t *data, size_t len);
   void process_frame_packet_(const uint8_t *data, size_t len);
   void process_frame_stats_packet_(const uint8_t *data, size_t len);
-  bool decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const uint8_t *data, size_t len);
+  bool decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, uint16_t w, uint16_t h, const uint8_t *data, size_t len);
+  // Set while a hardware-intended (pre-compensated) tile falls back to the
+  // software decoder: the draw callback then applies the hardware's expansion.
+  bool sw_expand_{false};
   bool decode_jpeg_tile_software_(int16_t dst_x, int16_t dst_y, const uint8_t *data, size_t len);
   bool draw_rle_tile_(int16_t dst_x, int16_t dst_y, uint16_t w, uint16_t h, const uint8_t *data, size_t len);
 

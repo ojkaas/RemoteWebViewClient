@@ -33,6 +33,14 @@ inline constexpr uint64_t ws_supervisor_restart_after_us = 30ULL * 1000 * 1000;
 inline constexpr int send_queue_depth = 32;
 inline constexpr int send_task_stack  = 4096;
 
+// Rects with at least this many pixels are decoded by the ESP32-P4 hardware
+// JPEG decoder (fast, DMA). Smaller ones go through JPEGDEC in software. The
+// server is told this threshold (URL param hwj) because it pre-compensates
+// hardware-decoded tiles for the decoder's fixed limited-range YUV->RGB
+// conversion; the rule must therefore depend on geometry only, never on the
+// encoded size.
+inline constexpr uint32_t hw_jpeg_min_pixels = 64 * 64;
+
 // Max pixels of a lossless RLE565 rect the client will decode (PSRAM buffer,
 // 2 bytes/pixel). Must match the server's rleMaxPixels.
 inline constexpr size_t rle_max_pixels = 32768;

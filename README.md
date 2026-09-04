@@ -36,6 +36,7 @@ This is a client that connects to [Remote WebView Server](https://github.com/str
 - **`on_connect` / `on_disconnect` triggers** — run automations (dim the panel, log, notify) on connection state changes.
 - **FrameAck flow control (0.3.9)** — the client connects with `ack=1` and acks every frame once it is drawn; server 1.1.5+ keeps one frame in flight per client. Frames no longer pile up in TCP buffers on slow WiFi, and fast links no longer wait a fixed 100 ms between frames.
 - **Diagnostic sensors (0.3.9)** — optional `connected_sensor`, `fps_sensor`, `frame_time_sensor`, `reconnects_sensor` for Home Assistant.
+- **Exact colours on the ESP32-P4 (0.3.13 with server 1.1.24+)** — the P4 hardware JPEG decoder applies a fixed limited-range YUV->RGB expansion to full-range JFIF data, which crushed dark tones and made hardware- and software-decoded tiles differ ("two different blacks" flickering in dark gradients). The client now tells the server which tiles it decodes in hardware (geometry rule, `hwj` param) and the server pre-compensates exactly those, and encodes every pixel at the centre of its RGB565 bin so JPEG error can no longer flip a displayed value. `hw_jpeg: false` forces software decode (exact but ~4x slower on large rects).
 - **`remote_webview.refresh` action** — forces the server to reload the current page and push a full frame (requires server 1.1.4+).
 
 ### Other
@@ -222,6 +223,7 @@ text:
 | `max_bytes_per_msg`     | int (B)   | ❌       | `14336` or `61440`                | Upper bound for a single WS binary message. |
 | `big_endian`            | bool      | ❌       | `true` or `false`                 | Use big-endian RGB565 pixel order for JPEG output (set false for little-endian panels). Default is `true`. |
 | `rotation`              | int       | ❌       | 0, 90, 180, 270                   | Enables software rotation for both the display and touchscreen. |
+| `hw_jpeg`               | bool      | ❌       | `true`                            | ESP32-P4 hardware JPEG decode for rects of 64x64 px and up (default true). |
 | `rle_max_ratio`         | float     | ❌       | `0.08`                            | Lossless RLE565 instead of JPEG for rects that compress to at most this fraction of their raw size (flat UI areas). Needs server 1.1.22+. |
 | `screencast_mode`       | string    | ❌       | `stream` / `ondemand`             | `ondemand` captures one Chromium frame per frame sent (server 1.1.19+). `stream` measured better. |
 | `reduced_motion`        | bool      | ❌       | `true`                            | Emulates `prefers-reduced-motion` for this device (server 1.1.13+). |

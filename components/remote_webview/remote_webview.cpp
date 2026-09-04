@@ -17,7 +17,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.3.11";
+static const char *const RWV_VERSION = "0.3.13";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 void RemoteWebView::add_on_connect_callback(std::function<void()> &&callback) {
@@ -96,7 +96,7 @@ void RemoteWebView::setup() {
   jpeg_decode_engine_cfg_t jcfg = {
     .timeout_ms = 50,
   };
-  if (jpeg_new_decoder_engine(&jcfg, &hw_dec_) != ESP_OK) {
+  if (!hw_jpeg_enabled_ || jpeg_new_decoder_engine(&jcfg, &hw_dec_) != ESP_OK) {
     hw_dec_ = nullptr;
   }
   
@@ -141,7 +141,7 @@ void RemoteWebView::dump_config() {
   }
 
 #if REMOTE_WEBVIEW_HW_JPEG
-  ESP_LOGCONFIG(TAG, "  hw_jpeg: %s", hw_dec_ ? "yes" : "no");
+  ESP_LOGCONFIG(TAG, "  hw_jpeg: %s%s", hw_dec_ ? "yes" : "no", hw_jpeg_enabled_ ? "" : " (disabled: hardware YUV->RGB is limited-range, darkens JFIF tiles)");
 #else
   ESP_LOGCONFIG(TAG, "  hw_jpeg: no");
 #endif
@@ -385,7 +385,9 @@ void RemoteWebView::ws_event_handler_(void *handler_arg, esp_event_base_t, int32
 }
 
 void RemoteWebView::start_decode_task_() {
-  xTaskCreatePinnedToCore(&RemoteWebView::decode_task_tramp_, "rwv_decode", cfg::decode_task_stack, this, 6, &t_decode_, 1);
+  // Priority 4: below the websocket client task (5) so long software decodes
+  // on this core never starve packet reception (they did: rx time tripled).
+  xTaskCreatePinnedToCore(&RemoteWebView::decode_task_tramp_, "rwv_decode", cfg::decode_task_stack, this, 4, &t_decode_, 1);
 }
 
 void RemoteWebView::decode_task_tramp_(void *arg) {
@@ -545,7 +547,7 @@ void RemoteWebView::process_frame_packet_(const uint8_t *data, size_t len)
     }
 
     if (fi.enc == proto::Encoding::JPEG && th.dlen) {
-      decode_jpeg_tile_to_lcd_((int16_t)th.x, (int16_t)th.y, data + off, th.dlen);
+      decode_jpeg_tile_to_lcd_((int16_t)th.x, (int16_t)th.y, th.w, th.h, data + off, th.dlen);
     } else if (fi.enc == proto::Encoding::RAW565_RLE && th.dlen) {
       draw_rle_tile_((int16_t)th.x, (int16_t)th.y, th.w, th.h, data + off, th.dlen);
     }
@@ -585,13 +587,16 @@ void RemoteWebView::process_frame_stats_packet_(const uint8_t *data, size_t len)
   ws_enqueue_send_(pkt, n, nullptr, pdMS_TO_TICKS(10));
 }
 
-bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const uint8_t *data, size_t len) {
+bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, uint16_t w, uint16_t h, const uint8_t *data, size_t len) {
   if (!data || !len) return false;
 
+  // Geometry-only rule shared with the server (hwj): the server pre-compensates
+  // exactly these tiles for the hardware decoder's colour conversion.
+  const bool hw_intended = hw_dec_ && (uint32_t)w * h >= cfg::hw_jpeg_min_pixels;
+  sw_expand_ = hw_intended;   // if we end up in software anyway, emulate the hardware's expansion
+
 #if REMOTE_WEBVIEW_HW_JPEG
-  // Small JPEG payloads (delta tiles, cursor updates) cause 200ms timeouts on
-  // the HW decoder — go straight to software decode for anything under 1 KB.
-  if (len >= 1024 && hw_dec_ && hw_decode_input_buf_ && hw_decode_output_buf_) {
+  if (hw_intended && hw_decode_input_buf_ && hw_decode_output_buf_) {
     jpeg_decode_picture_info_t hdr{};
     if (jpeg_decoder_get_info(data, (uint32_t)len, &hdr) != ESP_OK || !hdr.width || !hdr.height) {
       return decode_jpeg_tile_software_(dst_x, dst_y, data, len);
@@ -609,7 +614,10 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
     jpeg_decode_cfg_t jcfg{};
     jcfg.output_format = JPEG_DECODE_OUT_FORMAT_RGB565;
     jcfg.rgb_order     = JPEG_DEC_RGB_ELEMENT_ORDER_BGR;
-    jcfg.conv_std      = JPEG_YUV_RGB_CONV_STD_BT709;
+    // JPEG/JFIF data is BT.601 full range. BT.709 here crushed dark tones to
+    // pure black on hardware-decoded tiles while software-decoded (JPEGDEC)
+    // tiles kept them, which showed as flickering "two different blacks".
+    jcfg.conv_std      = JPEG_YUV_RGB_CONV_STD_BT601;
 
     memcpy(hw_decode_input_buf_, data, len);
 
@@ -638,6 +646,10 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, const
     }
 
     //ESP_LOGD(TAG, "hw_jpeg tile %ux%u, aligned %dx%d, x_pad=%d",(unsigned)hdr.width, (unsigned)hdr.height, aligned_w, aligned_h, x_pad);
+    if (cfg::latency_log_every && (frame_id_ % cfg::latency_log_every) == 0) {
+      const uint16_t p0 = (uint16_t)hw_decode_output_buf_[0] | ((uint16_t)hw_decode_output_buf_[1] << 8);
+      ESP_LOGD(TAG, "px probe HW rect@%d,%d %ux%u first565=0x%04x", dst_x, dst_y, (unsigned)hdr.width, (unsigned)hdr.height, p0);
+    }
     display_->draw_pixels_at(dst_x, dst_y, (int)hdr.width, (int)hdr.height, hw_decode_output_buf_,
         esphome::display::COLOR_ORDER_RGB,
         esphome::display::COLOR_BITNESS_565,
@@ -699,6 +711,26 @@ int RemoteWebView::jpeg_draw_cb_s_(JPEGDRAW *p) {
 
 int RemoteWebView::jpeg_draw_cb_(JPEGDRAW *p) {
   int32_t x = p->x, y = p->y, w = p->iWidth, h = p->iHeight;
+  if (sw_expand_) {
+    // Hardware-intended tile decoded in software: apply the P4 decoder's
+    // limited-range expansion per channel so it matches hardware-decoded tiles.
+    static uint8_t lut5[32], lut6[64]; static bool lut_init = false;
+    if (!lut_init) {
+      for (int i = 0; i < 32; i++) { int v = (int)(1.164f * ((i << 3) - 16)); lut5[i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 31 : v >> 3); }
+      for (int i = 0; i < 64; i++) { int v = (int)(1.164f * ((i << 2) - 16)); lut6[i] = (uint8_t)(v < 0 ? 0 : v > 255 ? 63 : v >> 2); }
+      lut_init = true;
+    }
+    uint16_t *px = p->pPixels; const int n = w * h;
+    for (int i = 0; i < n; i++) {
+      uint16_t v = px[i];
+      if (rgb565_big_endian_) v = (uint16_t)((v << 8) | (v >> 8));
+      const uint16_t o = (uint16_t)((lut5[v >> 11] << 11) | (lut6[(v >> 5) & 0x3F] << 5) | lut5[v & 0x1F]);
+      px[i] = rgb565_big_endian_ ? (uint16_t)((o << 8) | (o >> 8)) : o;
+    }
+  }
+  if (cfg::latency_log_every && (frame_id_ % cfg::latency_log_every) == 0 && p->x == 0 && p->y == 0) {
+    ESP_LOGD(TAG, "px probe SW first565=0x%04x", (unsigned)p->pPixels[0]);
+  }
   
   if (x >= display_width_ || y >= display_height_) return 1;
   if (x + w > display_width_) w = display_width_ - x;
@@ -946,6 +978,11 @@ std::string RemoteWebView::build_ws_uri_() const {
   append_q_int_(uri,   "prm",  reduced_motion_);   // emulate prefers-reduced-motion for this device
   append_q_str_(uri,   "scm",  screencast_mode_.c_str());
   append_q_float_(uri, "rle",  rle_max_ratio_);
+#if REMOTE_WEBVIEW_HW_JPEG
+  append_q_int_(uri,   "hwj",  hw_jpeg_enabled_ ? (int)cfg::hw_jpeg_min_pixels : 0);  // server pre-compensates these tiles
+#else
+  append_q_int_(uri,   "hwj",  0);
+#endif
 
   return uri;
 }
