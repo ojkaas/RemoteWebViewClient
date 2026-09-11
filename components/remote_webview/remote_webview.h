@@ -2,6 +2,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/automation.h"
 #include <atomic>
+#include <algorithm>
 #include "esphome/components/display/display.h"
 #include "esphome/components/touchscreen/touchscreen.h"
 #include "esphome/components/binary_sensor/binary_sensor.h"
@@ -64,6 +65,7 @@ class RemoteWebView : public Component {
   // tiles of >= hw_jpeg_min_pixels for it (URL param hwj), so colours match
   // the software-decoded small tiles exactly.
   void set_hw_jpeg(bool v) { hw_jpeg_enabled_ = v; }
+  void set_touch_feedback(bool v) { touch_feedback_ = v; }
   // Frames the server may have in flight to this panel (server 1.1.25+). 1 on
   // weak WiFi halves queueing latency; 2 (server default) pipelines on good links.
   void set_max_inflight(int v) { max_inflight_ = v; }
@@ -151,6 +153,37 @@ class RemoteWebView : public Component {
 #endif
 
   uint64_t last_move_us_{0};
+
+  // --- touch: tap detection (main loop only) ---
+  bool touch_feedback_{true};
+  bool touch_active_{false};
+  bool touch_promoted_{false};   // Down already sent (drag / long press)
+  uint8_t touch_pid_{0};
+  int touch_x0_{0}, touch_y0_{0};
+  uint64_t touch_down_us_{0};
+  void touch_begin_(int x, int y, uint8_t id);
+  void touch_move_(int x, int y, uint8_t id);
+  void touch_end_(int x, int y, uint8_t id);
+  void touch_promote_();
+  void touch_poll_();
+
+  // --- display: shadow copy + local feedback ring ---
+  // Every rect drawn to the display also lands in shadow_ (RGB565, byte order
+  // as drawn), so the ring can be blended over and erased from real content.
+  // draw_mutex_ serialises the decode task's rect draws and the main loop's
+  // ring draws. Ring state is only touched under the mutex.
+  uint8_t *shadow_{nullptr};
+  uint8_t *ring_buf_{nullptr};
+  SemaphoreHandle_t draw_mutex_{nullptr};
+  bool ring_visible_{false};
+  int ring_x_{0}, ring_y_{0};
+  uint64_t ring_hide_after_us_{0};
+  void blit_(int x, int y, int w, int h, const uint8_t *px);
+  void ring_bbox_(int &x0, int &y0, int &x1, int &y1) const;
+  void ring_draw_locked_();
+  void ring_erase_locked_();
+  void ring_show_(int x, int y);
+  void ring_hide_();
   uint64_t last_keepalive_us_{0};
   uint64_t disconnected_since_us_{0};  // supervisor task only
 

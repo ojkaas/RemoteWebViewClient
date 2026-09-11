@@ -38,6 +38,7 @@ CONF_RLE_MAX_RATIO = "rle_max_ratio"
 CONF_HW_JPEG = "hw_jpeg"
 CONF_LOSSLESS_MAX_RATIO = "lossless_max_ratio"
 CONF_DEFLATE_LEVEL = "deflate_level"
+CONF_TOUCH_FEEDBACK = "touch_feedback"
 CONF_MAX_INFLIGHT = "max_inflight"
 
 _SERVER_RE = re.compile(
@@ -95,6 +96,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_HW_JPEG, default=True): cv.boolean,
         cv.Optional(CONF_LOSSLESS_MAX_RATIO, default=0.2): cv.float_range(min=0.0, max=1.0),
         cv.Optional(CONF_DEFLATE_LEVEL, default=6): cv.int_range(min=1, max=9),
+        cv.Optional(CONF_TOUCH_FEEDBACK, default=True): cv.boolean,
         cv.Optional(CONF_MAX_INFLIGHT): cv.int_range(min=1, max=4),
         cv.Optional(CONF_ON_CONNECT): automation.validate_automation(
             {cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(OnConnectTrigger)}
@@ -185,6 +187,7 @@ async def to_code(config):
     cg.add(var.set_hw_jpeg(config[CONF_HW_JPEG]))
     cg.add(var.set_lossless_max_ratio(config[CONF_LOSSLESS_MAX_RATIO]))
     cg.add(var.set_deflate_level(config[CONF_DEFLATE_LEVEL]))
+    cg.add(var.set_touch_feedback(config[CONF_TOUCH_FEEDBACK]))
     if CONF_MAX_INFLIGHT in config:
         cg.add(var.set_max_inflight(config[CONF_MAX_INFLIGHT]))
 

@@ -18,7 +18,7 @@ namespace esphome {
 namespace remote_webview {
 
 static const char *const TAG = "Remote_WebView";
-static const char *const RWV_VERSION = "0.4.1";
+static const char *const RWV_VERSION = "0.4.2";
 RemoteWebView *RemoteWebView::self_ = nullptr;
 
 void RemoteWebView::add_on_connect_callback(std::function<void()> &&callback) {
@@ -43,6 +43,8 @@ void RemoteWebView::loop() {
     ESP_LOGD(TAG, "on_connect");
     this->on_connect_callback_.call();
   }
+
+  touch_poll_();
 
   // Diagnostics, 1 Hz. Cheap when no sensors are configured.
   const bool connected = is_connected();
@@ -79,6 +81,17 @@ void RemoteWebView::setup() {
 
   display_width_ = display_->get_width();
   display_height_ = display_->get_height();
+  draw_mutex_ = xSemaphoreCreateMutex();
+  if (touch_feedback_) {
+    const size_t shadow_bytes = (size_t)display_width_ * display_height_ * 2;
+    shadow_ = (uint8_t *)heap_caps_calloc(1, shadow_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    const int d = 2 * cfg::ring_radius_px + 1;
+    ring_buf_ = (uint8_t *)heap_caps_malloc((size_t)d * d * 2, MALLOC_CAP_8BIT);
+    if (!shadow_ || !ring_buf_) {
+      ESP_LOGW(TAG, "touch feedback disabled: buffer alloc failed");
+      touch_feedback_ = false;
+    }
+  }
 
   q_decode_ = xQueueCreate(cfg::decode_queue_depth, sizeof(WsMsg));
   q_send_   = xQueueCreate(cfg::send_queue_depth, sizeof(SendMsg));
@@ -654,10 +667,7 @@ bool RemoteWebView::decode_jpeg_tile_to_lcd_(int16_t dst_x, int16_t dst_y, uint1
       const uint16_t p0 = (uint16_t)hw_decode_output_buf_[0] | ((uint16_t)hw_decode_output_buf_[1] << 8);
       ESP_LOGD(TAG, "px probe HW rect@%d,%d %ux%u first565=0x%04x", dst_x, dst_y, (unsigned)hdr.width, (unsigned)hdr.height, p0);
     }
-    display_->draw_pixels_at(dst_x, dst_y, (int)hdr.width, (int)hdr.height, hw_decode_output_buf_,
-        esphome::display::COLOR_ORDER_RGB,
-        esphome::display::COLOR_BITNESS_565,
-        rgb565_big_endian_);
+    blit_(dst_x, dst_y, (int)hdr.width, (int)hdr.height, hw_decode_output_buf_);
 
     return true;
   }
@@ -692,8 +702,7 @@ bool RemoteWebView::draw_deflate_tile_(int16_t dst_x, int16_t dst_y, uint16_t w,
   if (rgb565_big_endian_) {
     for (size_t i = 0; i + 1 < out_len; i += 2) { const uint8_t t = lz_buf_[i]; lz_buf_[i] = lz_buf_[i + 1]; lz_buf_[i + 1] = t; }
   }
-  display_->draw_pixels_at(dst_x, dst_y, (int)w, (int)h, lz_buf_,
-      esphome::display::COLOR_ORDER_RGB, esphome::display::COLOR_BITNESS_565, rgb565_big_endian_);
+  blit_(dst_x, dst_y, (int)w, (int)h, lz_buf_);
   return true;
 }
 
@@ -715,8 +724,7 @@ bool RemoteWebView::draw_rle_tile_(int16_t dst_x, int16_t dst_y, uint16_t w, uin
     for (uint8_t k = 0; k < run; k++) rle_buf_[o++] = v;
   }
   if (o != n) { ESP_LOGW(TAG, "rle short: %u/%u px", (unsigned)o, (unsigned)n); return false; }
-  display_->draw_pixels_at(dst_x, dst_y, (int)w, (int)h, (const uint8_t *)rle_buf_,
-      esphome::display::COLOR_ORDER_RGB, esphome::display::COLOR_BITNESS_565, rgb565_big_endian_);
+  blit_(dst_x, dst_y, (int)w, (int)h, (const uint8_t *)rle_buf_);
   return true;
 }
 
@@ -771,13 +779,7 @@ int RemoteWebView::jpeg_draw_cb_(JPEGDRAW *p) {
   if (y + h > display_height_) h = display_height_ - y;
   if (w <= 0 || h <= 0) return 1;
 
-  display_->draw_pixels_at(
-      x, y, w, h,
-      (const uint8_t *)p->pPixels,
-      esphome::display::COLOR_ORDER_RGB,
-      esphome::display::COLOR_BITNESS_565,
-      rgb565_big_endian_
-  );
+  blit_(x, y, w, h, (const uint8_t *)p->pPixels);
 
   return 1;
 }
@@ -795,8 +797,8 @@ bool RemoteWebView::ws_send_touch_event_(proto::TouchType type, int x, int y, ui
   uint8_t pkt[sizeof(proto::TouchPacket)];
   const size_t n = proto::build_touch_packet(type, pid, x, y, pkt);
 
-  // Move events are expendable; Down/Up are critical for click detection
-  const TickType_t wait = (type == proto::TouchType::Move) ? 0 : pdMS_TO_TICKS(50);
+  // Move events are expendable; Down/Up/Tap are critical for click detection
+  const TickType_t wait = (type == proto::TouchType::Move) ? 0 : pdMS_TO_TICKS(200);
   return ws_enqueue_send_(pkt, n, nullptr, wait);
 }
 
@@ -841,42 +843,201 @@ bool RemoteWebView::ws_send_keepalive_() {
   return ws_enqueue_send_(pkt, n, nullptr, pdMS_TO_TICKS(50));
 }
 
+// ---------------------------------------------------------------------------
+// Display: every rect goes through blit_, which draws it and keeps the shadow
+// copy in sync. If the feedback ring is visible and the rect overlaps it, the
+// ring is re-blended on top so a frame arriving mid-press does not cut a hole
+// in it.
+// ---------------------------------------------------------------------------
+void RemoteWebView::blit_(int x, int y, int w, int h, const uint8_t *px) {
+  if (!px || w <= 0 || h <= 0) return;
+  if (draw_mutex_) xSemaphoreTake(draw_mutex_, portMAX_DELAY);
+  display_->draw_pixels_at(x, y, w, h, px,
+      esphome::display::COLOR_ORDER_RGB, esphome::display::COLOR_BITNESS_565, rgb565_big_endian_);
+  if (shadow_) {
+    const int W = display_width_, H = display_height_;
+    const int x0 = std::max(x, 0), y0 = std::max(y, 0);
+    const int x1 = std::min(x + w, W), y1 = std::min(y + h, H);
+    if (x1 > x0 && y1 > y0) {
+      const size_t row_bytes = (size_t)(x1 - x0) * 2;
+      for (int r = y0; r < y1; r++)
+        memcpy(shadow_ + ((size_t)r * W + x0) * 2, px + ((size_t)(r - y) * w + (x0 - x)) * 2, row_bytes);
+      if (ring_visible_) {
+        int rx0, ry0, rx1, ry1;
+        ring_bbox_(rx0, ry0, rx1, ry1);
+        if (x0 < rx1 && x1 > rx0 && y0 < ry1 && y1 > ry0) ring_draw_locked_();
+      }
+    }
+  }
+  if (draw_mutex_) xSemaphoreGive(draw_mutex_);
+}
+
+void RemoteWebView::ring_bbox_(int &x0, int &y0, int &x1, int &y1) const {
+  const int r = cfg::ring_radius_px;
+  x0 = std::max(ring_x_ - r, 0);
+  y0 = std::max(ring_y_ - r, 0);
+  x1 = std::min(ring_x_ + r + 1, display_width_);
+  y1 = std::min(ring_y_ + r + 1, display_height_);
+}
+
+// Blend the disc over the shadow content into ring_buf_ and draw it. Light on
+// dark content, dark on light content, so it is visible on any page.
+void RemoteWebView::ring_draw_locked_() {
+  if (!shadow_ || !ring_buf_) return;
+  int x0, y0, x1, y1;
+  ring_bbox_(x0, y0, x1, y1);
+  const int w = x1 - x0, h = y1 - y0;
+  if (w <= 0 || h <= 0) return;
+  const int W = display_width_;
+  const int r = cfg::ring_radius_px;
+  const int r2 = r * r, ri2 = (r - 3) * (r - 3);
+
+  // average luminance of the area decides the tint
+  uint32_t lum = 0;
+  for (int yy = y0; yy < y1; yy++) {
+    const uint8_t *row = shadow_ + ((size_t)yy * W + x0) * 2;
+    for (int xx = 0; xx < w; xx++) {
+      uint16_t v = rgb565_big_endian_ ? (uint16_t)((row[2 * xx] << 8) | row[2 * xx + 1])
+                                      : (uint16_t)(row[2 * xx] | (row[2 * xx + 1] << 8));
+      const uint32_t R = (v >> 11) << 3, G = ((v >> 5) & 0x3F) << 2, B = (v & 0x1F) << 3;
+      lum += (R * 77 + G * 151 + B * 28) >> 8;
+    }
+  }
+  const bool light_tint = (lum / (uint32_t)(w * h)) < 140;
+  const int T = light_tint ? 255 : 0;
+
+  for (int yy = 0; yy < h; yy++) {
+    const uint8_t *src = shadow_ + ((size_t)(y0 + yy) * W + x0) * 2;
+    uint8_t *dst = ring_buf_ + (size_t)yy * w * 2;
+    const int dy = (y0 + yy) - ring_y_;
+    for (int xx = 0; xx < w; xx++) {
+      const int dx = (x0 + xx) - ring_x_;
+      const int d2 = dx * dx + dy * dy;
+      uint16_t v = rgb565_big_endian_ ? (uint16_t)((src[2 * xx] << 8) | src[2 * xx + 1])
+                                      : (uint16_t)(src[2 * xx] | (src[2 * xx + 1] << 8));
+      if (d2 <= r2) {
+        const int a = d2 > ri2 ? 200 : 90;   // rim stronger than the fill
+        int R = (v >> 11) << 3, G = ((v >> 5) & 0x3F) << 2, B = (v & 0x1F) << 3;
+        R += ((T - R) * a) >> 8; G += ((T - G) * a) >> 8; B += ((T - B) * a) >> 8;
+        v = (uint16_t)(((R >> 3) << 11) | ((G >> 2) << 5) | (B >> 3));
+      }
+      if (rgb565_big_endian_) { dst[2 * xx] = (uint8_t)(v >> 8); dst[2 * xx + 1] = (uint8_t)v; }
+      else                    { dst[2 * xx] = (uint8_t)v; dst[2 * xx + 1] = (uint8_t)(v >> 8); }
+    }
+  }
+  display_->draw_pixels_at(x0, y0, w, h, ring_buf_,
+      esphome::display::COLOR_ORDER_RGB, esphome::display::COLOR_BITNESS_565, rgb565_big_endian_);
+}
+
+void RemoteWebView::ring_erase_locked_() {
+  if (!shadow_ || !ring_buf_) return;
+  int x0, y0, x1, y1;
+  ring_bbox_(x0, y0, x1, y1);
+  const int w = x1 - x0, h = y1 - y0;
+  if (w <= 0 || h <= 0) return;
+  for (int yy = 0; yy < h; yy++)
+    memcpy(ring_buf_ + (size_t)yy * w * 2, shadow_ + ((size_t)(y0 + yy) * display_width_ + x0) * 2, (size_t)w * 2);
+  display_->draw_pixels_at(x0, y0, w, h, ring_buf_,
+      esphome::display::COLOR_ORDER_RGB, esphome::display::COLOR_BITNESS_565, rgb565_big_endian_);
+}
+
+void RemoteWebView::ring_show_(int x, int y) {
+  if (!touch_feedback_ || !shadow_) return;
+  if (draw_mutex_) xSemaphoreTake(draw_mutex_, portMAX_DELAY);
+  if (ring_visible_) ring_erase_locked_();
+  ring_x_ = x; ring_y_ = y; ring_visible_ = true;
+  ring_draw_locked_();
+  if (draw_mutex_) xSemaphoreGive(draw_mutex_);
+}
+
+void RemoteWebView::ring_hide_() {
+  if (draw_mutex_) xSemaphoreTake(draw_mutex_, portMAX_DELAY);
+  if (ring_visible_) { ring_erase_locked_(); ring_visible_ = false; }
+  if (draw_mutex_) xSemaphoreGive(draw_mutex_);
+}
+
+// ---------------------------------------------------------------------------
+// Touch: tap detection. Runs in the main loop (touchscreen listener + loop()).
+// ---------------------------------------------------------------------------
+void RemoteWebView::touch_begin_(int x, int y, uint8_t id) {
+  if (touch_active_) return;   // second finger: the UI is single-touch
+  touch_active_ = true;
+  touch_promoted_ = false;
+  touch_pid_ = id;
+  touch_x0_ = x; touch_y0_ = y;
+  touch_down_us_ = esp_timer_get_time();
+  ring_hide_after_us_ = touch_down_us_ + (uint64_t)cfg::ring_min_ms * 1000;
+  ring_show_(x, y);
+}
+
+// Promote a pending tap to a real Down (finger moved or is being held).
+void RemoteWebView::touch_promote_() {
+  if (!touch_active_ || touch_promoted_) return;
+  touch_promoted_ = true;
+  ws_send_touch_event_(proto::TouchType::Down, touch_x0_, touch_y0_, touch_pid_);
+}
+
+void RemoteWebView::touch_move_(int x, int y, uint8_t id) {
+  if (!touch_active_ || id != touch_pid_) return;
+  const uint64_t now = esp_timer_get_time();
+  if (!touch_promoted_) {
+    const bool moved = std::abs(x - touch_x0_) > cfg::tap_slop_px || std::abs(y - touch_y0_) > cfg::tap_slop_px;
+    const bool held = now - touch_down_us_ > (uint64_t)cfg::tap_max_ms * 1000;
+    if (!moved && !held) return;
+    touch_promote_();
+  }
+  if (!kCoalesceMoves || kMoveIntervalUs == 0 || (now - last_move_us_) >= kMoveIntervalUs) {
+    last_move_us_ = now;
+    ws_send_touch_event_(proto::TouchType::Move, x, y, id);
+  }
+}
+
+void RemoteWebView::touch_end_(int x, int y, uint8_t id) {
+  if (!touch_active_ || id != touch_pid_) return;
+  touch_active_ = false;
+  if (touch_promoted_) {
+    ws_send_touch_event_(proto::TouchType::Up, x, y, id);
+  } else {
+    // one packet, dispatched by the server as touchStart+touchEnd back to back
+    ws_send_touch_event_(proto::TouchType::Tap, touch_x0_, touch_y0_, id);
+  }
+  const uint64_t now = esp_timer_get_time();
+  if (ring_hide_after_us_ < now) ring_hide_after_us_ = now;
+}
+
+void RemoteWebView::touch_poll_() {
+  const uint64_t now = esp_timer_get_time();
+  // A finger held still gets no update() callbacks: promote on time-out here so
+  // long presses still reach the page as a real touchStart.
+  if (touch_active_ && !touch_promoted_ && now - touch_down_us_ > (uint64_t)cfg::tap_max_ms * 1000)
+    touch_promote_();
+  if (ring_visible_ && !touch_active_ && now >= ring_hide_after_us_)
+    ring_hide_();
+}
+
 void RemoteWebViewTouchListener::update(const touchscreen::TouchPoints_t &pts) {
   if (!parent_) return;
-
-  const uint64_t now = esp_timer_get_time();
   for (auto &p : pts) {
     switch (p.state) {
-      case touchscreen::STATE_PRESSED:
-        parent_->ws_send_touch_event_(proto::TouchType::Down, p.x, p.y, p.id);
-        break;
-      case touchscreen::STATE_UPDATED:
-        if (!RemoteWebView::kCoalesceMoves || RemoteWebView::kMoveIntervalUs == 0 ||
-            (now - parent_->last_move_us_) >= RemoteWebView::kMoveIntervalUs) {
-          parent_->last_move_us_ = now;
-          parent_->ws_send_touch_event_(proto::TouchType::Move, p.x, p.y, p.id);
-        }
-        break;
+      case touchscreen::STATE_PRESSED:   parent_->touch_begin_(p.x, p.y, p.id); break;
+      case touchscreen::STATE_UPDATED:   parent_->touch_move_(p.x, p.y, p.id);  break;
       case touchscreen::STATE_RELEASING:
-      case touchscreen::STATE_RELEASED:
-        parent_->ws_send_touch_event_(proto::TouchType::Up, p.x, p.y, p.id);
-        break;
+      case touchscreen::STATE_RELEASED:  parent_->touch_end_(p.x, p.y, p.id);   break;
       default: break;
     }
   }
 }
 
+// All fingers up. Normally update() already ended the touch (STATE_RELEASED);
+// this is the backstop for drivers that skip that state.
 void RemoteWebViewTouchListener::release() {
   if (!parent_) return;
-  
-  parent_->ws_send_touch_event_(proto::TouchType::Up, 0, 0, 0);
+  parent_->touch_end_(parent_->touch_x0_, parent_->touch_y0_, parent_->touch_pid_);
 }
 
-void RemoteWebViewTouchListener::touch(touchscreen::TouchPoint tp) {
-  if (!parent_) return;
-  
-  parent_->ws_send_touch_event_(proto::TouchType::Down, tp.x, tp.y, tp.id);
-}
+// First-touch callback: update() already handled STATE_PRESSED for this point
+// (the old code sent Down from both, i.e. twice per press).
+void RemoteWebViewTouchListener::touch(touchscreen::TouchPoint tp) {}
 
 void RemoteWebView::disable_touch(bool disable) {
   touch_disabled_ = disable;

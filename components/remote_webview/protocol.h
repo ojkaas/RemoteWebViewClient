@@ -15,7 +15,7 @@ constexpr uint16_t kFlagOpenURLForce = 1u<<0;  // reload even if the URL is unch
 enum class MsgType   : uint8_t { Unknown = 0, Frame = 1, Touch = 2, FrameStats = 3, OpenURL = 4, Keepalive = 5, FrameAck = 9 };
 enum class Encoding  : uint8_t { Unknown = 0, PNG = 1, JPEG = 2, RAW565 = 3, RAW565_RLE = 4, RAW565_LZ4 = 5,
                                  RAW565_DEFLATE = 6 /* raw deflate of RGB565 LE pixels, w*h*2 bytes */ };
-enum class TouchType : uint8_t { Unknown = 0, Down = 1, Move = 2, Up = 3 };
+enum class TouchType : uint8_t { Unknown = 0, Down = 1, Move = 2, Up = 3, Tap = 4 };
 
 #if defined(__GNUC__)
   #define RWV_PACKED __attribute__((packed))

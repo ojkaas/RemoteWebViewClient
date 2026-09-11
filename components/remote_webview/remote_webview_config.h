@@ -57,6 +57,19 @@ inline constexpr int   deflate_level_default = 6;
 // Log a per-frame latency breakdown (rx / decode / ack) every N frames; 0 disables.
 inline constexpr uint32_t latency_log_every = 50;
 
+// Tap detection. A press that ends within tap_max_ms without moving more than
+// tap_slop_px is sent as ONE atomic Tap packet (server dispatches
+// touchStart+touchEnd back to back) instead of Down ... Up. On a stalling
+// WiFi link the two halves used to arrive seconds apart, which Chromium reads
+// as a long press and not a click. Longer or moving presses are promoted to
+// Down/Move/Up as before.
+inline constexpr uint32_t tap_max_ms  = 350;
+inline constexpr int      tap_slop_px = 12;
+// Local touch feedback: a translucent disc drawn by the panel itself at the
+// touch point, visible while the finger is down and at least ring_min_ms.
+inline constexpr int      ring_radius_px = 26;
+inline constexpr uint32_t ring_min_ms    = 150;
+
 inline constexpr bool coalesce_moves = true;
 inline constexpr uint32_t move_rate_hz = 60;
 
